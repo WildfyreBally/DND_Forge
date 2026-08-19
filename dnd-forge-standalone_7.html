@@ -1,0 +1,2286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DND Forge — Character Builder</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #14120f; min-height: 100vh; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+<script>
+  // Local-storage backed replacement for the Claude-artifacts window.storage API,
+  // so saved characters/races/classes/theme/sync-config persist in this browser.
+  window.storage = {
+    async get(key) {
+      const v = localStorage.getItem("dndforge::" + key);
+      return v === null ? null : { key, value: v, shared: false };
+    },
+    async set(key, value) {
+      localStorage.setItem("dndforge::" + key, value);
+      return { key, value, shared: false };
+    },
+    async delete(key) {
+      localStorage.removeItem("dndforge::" + key);
+      return { key, deleted: true, shared: false };
+    },
+    async list(prefix) {
+      const keys = [];
+      const p = "dndforge::" + (prefix || "");
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(p)) keys.push(k.replace("dndforge::", ""));
+      }
+      return { keys, prefix, shared: false };
+    },
+  };
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+/* ============================================================
+   DEFAULT DATA — original summaries of openly-licensed (SRD / CC-BY)
+   D&D content. These are the starting point; the app copies them
+   into storage on first run, and everything after that is editable.
+   ============================================================ */
+
+const DEFAULT_RACES = [
+  {
+    id: "human", name: "Human", glyph: "☉", size: "Medium", speed: 30,
+    bonuses: { str: 1, dex: 1, con: 1, int: 1, wis: 1, cha: 1 },
+    traits: [
+      "Adaptable — one extra skill proficiency of your choice",
+      "Ambitious — spreads improvement across every ability rather than favoring one",
+    ],
+    blurb: "The baseline against which every other people measures itself — restless, varied, everywhere.",
+  },
+  {
+    id: "elf", name: "Elf", glyph: "✦", size: "Medium", speed: 30,
+    bonuses: { dex: 2 },
+    traits: [
+      "Fey Ancestry — advantage against being charmed, immune to magical sleep",
+      "Trance — doesn't need to sleep; rests 4 hours to gain the benefit of a long rest",
+      "Keen Senses — proficiency in Perception",
+    ],
+    blurb: "Long-lived and quick-eyed, moving through the world like a held breath.",
+  },
+  {
+    id: "dwarf", name: "Dwarf", glyph: "⛏", size: "Medium", speed: 25,
+    bonuses: { con: 2 },
+    traits: [
+      "Darkvision — see in dim light within 60 ft. as if bright, in darkness as if dim",
+      "Dwarven Resilience — advantage on saves against poison, resistance to poison damage",
+      "Stonecunning — doubled proficiency bonus on History checks about stonework",
+    ],
+    blurb: "Built low and sturdy, with a grudge-length memory and a mountain's patience.",
+  },
+  {
+    id: "halfling", name: "Halfling", glyph: "❖", size: "Small", speed: 25,
+    bonuses: { dex: 2 },
+    traits: [
+      "Lucky — reroll a natural 1 on attack rolls, ability checks, or saving throws",
+      "Brave — advantage on saves against being frightened",
+      "Nimble — can move through the space of any creature larger than itself",
+    ],
+    blurb: "Small enough to go unnoticed, cheerful enough that no one minds when they are.",
+  },
+  {
+    id: "dragonborn", name: "Dragonborn", glyph: "⚡", size: "Medium", speed: 30,
+    bonuses: { str: 2, cha: 1 },
+    traits: [
+      "Breath Weapon — exhale destructive energy in a line or cone (type set by ancestry)",
+      "Damage Resistance — resistant to the damage type tied to your draconic ancestry",
+    ],
+    blurb: "Descended from dragons in form more than lineage, carrying a breath weapon like an heirloom.",
+  },
+  {
+    id: "gnome", name: "Gnome", glyph: "⚙", size: "Small", speed: 25,
+    bonuses: { int: 2 },
+    traits: [
+      "Darkvision — see in dim light within 60 ft. as if bright, in darkness as if dim",
+      "Gnome Cunning — advantage on Intelligence, Wisdom, and Charisma saves against magic",
+    ],
+    blurb: "Small, clever, and incurably curious about how everything works.",
+  },
+  {
+    id: "half-elf", name: "Half-Elf", glyph: "◈", size: "Medium", speed: 30,
+    bonuses: { cha: 2 },
+    traits: [
+      "Dual Heritage — two ability scores of your choice each increase by 1",
+      "Fey Ancestry — advantage against being charmed, immune to magical sleep",
+      "Skill Versatility — proficiency in two skills of your choice",
+    ],
+    blurb: "Belonging fully to neither of the peoples that made them, and fluent in both.",
+  },
+  {
+    id: "half-orc", name: "Half-Orc", glyph: "⚔", size: "Medium", speed: 30,
+    bonuses: { str: 2, con: 1 },
+    traits: [
+      "Relentless Endurance — when reduced to 0 HP but not killed outright, drop to 1 HP instead (once per long rest)",
+      "Savage Attacks — extra weapon damage die on a melee critical hit",
+    ],
+    blurb: "Built for a fight the world keeps handing them, and rarely the one to back down first.",
+  },
+  {
+    id: "tiefling", name: "Tiefling", glyph: "⛧", size: "Medium", speed: 30,
+    bonuses: { int: 1, cha: 2 },
+    traits: [
+      "Darkvision — see in dim light within 60 ft. as if bright, in darkness as if dim",
+      "Hellish Resistance — resistant to fire damage",
+      "Infernal Legacy — knows the thaumaturgy cantrip; gains minor spells at higher levels",
+    ],
+    blurb: "Marked by an infernal bloodline they didn't choose, and mostly done apologizing for it.",
+  },
+  {
+    id: "goliath", name: "Goliath", glyph: "⛰", size: "Medium", speed: 30,
+    bonuses: { str: 2, con: 1 },
+    traits: [
+      "Giant Ancestry — a heritage-based benefit chosen at creation, echoing the giants of old",
+      "Powerful Build — counts as one size larger when determining carrying capacity and lift",
+      "Mountain Endurance — a burst of resilience that shrugs off a portion of incoming damage once per rest",
+    ],
+    blurb: "Built on a mountain's scale, and just as hard to move once it decides to stay put.",
+  },
+];
+
+const DEFAULT_CLASSES = [
+  {
+    id: "barbarian", name: "Barbarian", glyph: "🪓", hitDie: 12, primary: "str", saves: ["str", "con"],
+    armor: "Light, medium, shields", weapons: "Simple and martial weapons",
+    features: [
+      "Rage — bonus damage and resistance to physical damage while raging",
+      "Unarmored Defense — AC = 10 + Dex mod + Con mod without armor",
+      "Reckless Attack (lvl 2) — advantage on melee attacks, at a cost",
+    ],
+    blurb: "Fights on instinct and fury, turning armor into an afterthought.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: {
+      5: ["Extra Attack — attack twice when you take the Attack action"],
+      7: ["Feral Instinct — advantage on initiative; act normally during a surprise while raging"],
+    },
+    subclasses: [{
+      id: "berserker", name: "Path of the Berserker", blurb: "Channels rage into single-minded destruction.",
+      features: [
+        { level: 3, text: "Frenzy — extra melee damage while raging, at the cost of exhaustion afterward" },
+        { level: 6, text: "Mindless Rage — immune to being charmed or frightened while raging" },
+      ],
+    }],
+  },
+  {
+    id: "bard", name: "Bard", glyph: "🎼", hitDie: 8, primary: "cha", saves: ["dex", "cha"],
+    armor: "Light armor", weapons: "Simple weapons, hand crossbows, longswords, rapiers, shortswords",
+    features: [
+      "Bardic Inspiration — grant an ally a die to add to a roll",
+      "Spellcasting — full caster, Charisma-based, known spell list",
+      "Jack of All Trades (lvl 2) — half proficiency on unproficient checks",
+    ],
+    blurb: "Casts magic the way others tell stories — because to them, it's the same act.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: { 5: ["Font of Inspiration — Bardic Inspiration recharges on a short rest"] },
+    subclasses: [{
+      id: "lore", name: "College of Lore", blurb: "Collects secrets and stories the way others collect scars.",
+      features: [
+        { level: 3, text: "Cutting Words — spend Bardic Inspiration to weaken a nearby attack, check, or damage roll" },
+        { level: 6, text: "Additional Magical Secrets — learn two spells from any class list" },
+      ],
+    }],
+  },
+  {
+    id: "cleric", name: "Cleric", glyph: "☨", hitDie: 8, primary: "wis", saves: ["wis", "cha"],
+    armor: "Light, medium, shields", weapons: "Simple weapons",
+    features: [
+      "Spellcasting — full caster, Wisdom-based, prepared from the entire cleric list",
+      "Divine Domain — grants extra spells and a domain feature at level 1",
+      "Channel Divinity (lvl 2) — fuel domain and Turn Undead abilities",
+    ],
+    blurb: "Carries a portion of their god's will into the world, and the authority to back it up.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 1,
+    levelFeatures: { 5: ["Destroy Undead — Channel Divinity destroys weaker undead outright"] },
+    subclasses: [{
+      id: "life", name: "Life Domain", blurb: "Channels healing magic with unusual efficiency.",
+      features: [
+        { level: 1, text: "Disciple of Life — your healing spells restore extra hit points" },
+        { level: 2, text: "Channel Divinity: Preserve Life — distribute a pool of healing among the wounded" },
+      ],
+    }],
+  },
+  {
+    id: "druid", name: "Druid", glyph: "❁", hitDie: 8, primary: "wis", saves: ["int", "wis"],
+    armor: "Light, medium (nonmetal), shields (nonmetal)",
+    weapons: "Clubs, daggers, darts, javelins, maces, quarterstaffs, scimitars, sickles, slings, spears",
+    features: [
+      "Spellcasting — full caster, Wisdom-based, prepared from the druid list",
+      "Wild Shape — transform into a beast you've seen, twice per short rest",
+      "Druidic — knows the secret language of druids",
+    ],
+    blurb: "Answers to older laws than any kingdom's, and can shed their own shape to prove it.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 2,
+    levelFeatures: {},
+    subclasses: [{
+      id: "land", name: "Circle of the Land", blurb: "Draws power from a bonded terrain.",
+      features: [
+        { level: 2, text: "Bonus Cantrip & Natural Recovery — an extra druid cantrip, and spell slots recovered on a short rest" },
+        { level: 3, text: "Circle Spells — terrain-themed spells always prepared" },
+      ],
+    }],
+  },
+  {
+    id: "fighter", name: "Fighter", glyph: "⚔", hitDie: 10, primary: "str/dex", saves: ["str", "con"],
+    armor: "All armor, shields", weapons: "Simple and martial weapons",
+    features: [
+      "Fighting Style — a permanent combat bonus chosen at level 1",
+      "Second Wind — bonus action self-heal, once per short rest",
+      "Action Surge (lvl 2) — take an additional action on your turn",
+    ],
+    blurb: "No spells, no tricks — just relentless, drilled competence with a weapon in hand.",
+    asiLevels: [4, 6, 8, 12, 14, 16, 19], subclassLevel: 3,
+    levelFeatures: {
+      5: ["Extra Attack — attack twice when you take the Attack action"],
+      9: ["Indomitable — reroll a failed saving throw"],
+    },
+    subclasses: [{
+      id: "champion", name: "Champion", blurb: "Wins through sheer, refined physical excellence.",
+      features: [
+        { level: 3, text: "Improved Critical — scores a critical hit on a wider die range" },
+        { level: 7, text: "Remarkable Athlete — added bonus on Strength, Dexterity, or Constitution checks" },
+      ],
+    }],
+  },
+  {
+    id: "monk", name: "Monk", glyph: "☯", hitDie: 8, primary: "dex/wis", saves: ["str", "dex"],
+    armor: "None", weapons: "Simple weapons, shortswords",
+    features: [
+      "Martial Arts — unarmed strikes and monk weapons scale with Dex, extra bonus-action strike",
+      "Unarmored Defense — AC = 10 + Dex mod + Wis mod without armor",
+      "Ki (lvl 2) — fuel Flurry of Blows, Patient Defense, and Step of the Wind",
+    ],
+    blurb: "Trains the body until it becomes the weapon, and the mind until it becomes the armor.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: { 5: ["Extra Attack — attack twice when you take the Attack action", "Stunning Strike — spend ki to daze a struck opponent"] },
+    subclasses: [{
+      id: "open-hand", name: "Way of the Open Hand", blurb: "Turns unarmed combat into a form of precise control.",
+      features: [
+        { level: 3, text: "Open Hand Technique — extra effects on a Flurry of Blows strike (knock prone, push, or deny reactions)" },
+        { level: 6, text: "Wholeness of Body — heal yourself using ki" },
+      ],
+    }],
+  },
+  {
+    id: "paladin", name: "Paladin", glyph: "🛡", hitDie: 10, primary: "str/cha", saves: ["wis", "cha"],
+    armor: "All armor, shields", weapons: "Simple and martial weapons",
+    features: [
+      "Divine Sense — detect celestials, fiends, and undead nearby",
+      "Lay on Hands — a pool of healing points refreshed on a long rest",
+      "Fighting Style & Spellcasting (lvl 2) — begins casting from the paladin list",
+    ],
+    blurb: "Swears an oath and then spends every level proving they meant it.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: { 5: ["Extra Attack — attack twice when you take the Attack action"] },
+    subclasses: [{
+      id: "devotion", name: "Oath of Devotion", blurb: "Bound to honesty, courage, and the protection of others.",
+      features: [{ level: 3, text: "Sacred Weapon & Turn the Unholy — Channel Divinity options that empower a weapon or repel fiends and undead" }],
+    }],
+  },
+  {
+    id: "ranger", name: "Ranger", glyph: "🏹", hitDie: 10, primary: "dex/wis", saves: ["str", "dex"],
+    armor: "Light, medium, shields", weapons: "Simple and martial weapons",
+    features: [
+      "Favored Enemy — bonus knowledge and tracking against a chosen creature type",
+      "Natural Explorer — expertise moving through a chosen terrain",
+      "Spellcasting (lvl 2) — begins casting from the ranger list",
+    ],
+    blurb: "Reads a forest the way a scholar reads a page, and hunts what most people only fear.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: { 5: ["Extra Attack — attack twice when you take the Attack action"] },
+    subclasses: [{
+      id: "hunter", name: "Hunter", blurb: "Specializes against a particular kind of threat.",
+      features: [{ level: 3, text: "Hunter's Prey — a combat option tailored to a single foe or a crowd of weaker ones" }],
+    }],
+  },
+  {
+    id: "rogue", name: "Rogue", glyph: "🗡", hitDie: 8, primary: "dex", saves: ["dex", "int"],
+    armor: "Light armor", weapons: "Simple weapons, hand crossbows, longswords, rapiers, shortswords",
+    features: [
+      "Sneak Attack — extra damage once per turn when you have advantage or a nearby ally",
+      "Expertise — double proficiency on two chosen skills",
+      "Cunning Action — bonus action to Dash, Disengage, or Hide",
+    ],
+    blurb: "Solves most problems with timing and a sharp edge before anyone notices they're in danger.",
+    asiLevels: [4, 8, 10, 12, 16, 19], subclassLevel: 3,
+    levelFeatures: { 5: ["Uncanny Dodge — halve the damage from an attack you can see coming"] },
+    subclasses: [{
+      id: "thief", name: "Thief", blurb: "Uses speed and cleverness rather than force.",
+      features: [{ level: 3, text: "Fast Hands & Second-Story Work — extra bonus-action uses of tools/items, and improved climbing and jumping" }],
+    }],
+  },
+  {
+    id: "sorcerer", name: "Sorcerer", glyph: "🔥", hitDie: 6, primary: "cha", saves: ["con", "cha"],
+    armor: "None", weapons: "Daggers, darts, slings, quarterstaffs, light crossbows",
+    features: [
+      "Spellcasting — full caster, Charisma-based, small known spell list",
+      "Sorcerous Origin — the source of your magic, granting a level 1 feature",
+      "Font of Magic (lvl 2) — convert between sorcery points and spell slots",
+    ],
+    blurb: "Doesn't study magic so much as contain it, one bloodline-given spell at a time.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 1,
+    levelFeatures: {},
+    subclasses: [{
+      id: "draconic", name: "Draconic Bloodline", blurb: "Magic that runs in the blood of dragons.",
+      features: [
+        { level: 1, text: "Draconic Resilience — extra hit points and a naturally tougher hide" },
+        { level: 6, text: "Elemental Affinity — bonus damage and resistance tied to your draconic damage type" },
+      ],
+    }],
+  },
+  {
+    id: "warlock", name: "Warlock", glyph: "☾", hitDie: 8, primary: "cha", saves: ["wis", "cha"],
+    armor: "Light armor", weapons: "Simple weapons",
+    features: [
+      "Pact Magic — a small number of spell slots that recharge on a short rest",
+      "Otherworldly Patron — the entity your power is borrowed from",
+      "Eldritch Invocations (lvl 2) — customizable magical perks",
+    ],
+    blurb: "Made a deal with something vast, and is still finding out what the fine print cost.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 1,
+    levelFeatures: {},
+    subclasses: [{
+      id: "fiend", name: "The Fiend", blurb: "A pact struck with something from the lower planes.",
+      features: [{ level: 1, text: "Dark One's Blessing — gain temporary hit points whenever you drop a foe" }],
+    }],
+  },
+  {
+    id: "wizard", name: "Wizard", glyph: "📖", hitDie: 6, primary: "int", saves: ["int", "wis"],
+    armor: "None", weapons: "Daggers, darts, slings, quarterstaffs, light crossbows",
+    features: [
+      "Spellcasting — full caster, Intelligence-based, prepared from a personal spellbook",
+      "Arcane Recovery — recover spell slots once per day on a short rest",
+      "Arcane Tradition (lvl 2) — chosen school of magic and its bonus feature",
+    ],
+    blurb: "Treats magic as a discipline to be studied, indexed, and eventually mastered.",
+    asiLevels: [4, 8, 12, 16, 19], subclassLevel: 2,
+    levelFeatures: {},
+    subclasses: [{
+      id: "evocation", name: "School of Evocation", blurb: "Shapes raw destructive magic with precision.",
+      features: [{ level: 2, text: "Evocation Savant & Sculpt Spells — cheaper evocation spellbook copying, and the ability to shield allies from your own damaging spells" }],
+    }],
+  },
+];
+
+const ABILS = ["str", "dex", "con", "int", "wis", "cha"];
+const ABIL_NAMES = { str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
+const POINT_BUY_COST = { 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 };
+const POINT_BUY_BUDGET = 27;
+
+const DEFAULT_THEME = {
+  bg: "#14120f", panel: "#1c1a15", panelAlt: "#211e18", border: "#3a3428",
+  parchment: "#e8e0cc", parchmentDim: "#a89f8a", gold: "#c9a54a", burgundy: "#8a3a3a",
+  fontPreset: "grimoire",
+};
+const FONT_PRESETS = [
+  { id: "grimoire", label: "Grimoire", display: "Cinzel", body: "EB Garamond" },
+  { id: "chronicle", label: "Chronicle", display: "Playfair Display", body: "Lora" },
+  { id: "relic", label: "Relic", display: "IM Fell English SC", body: "IM Fell English" },
+  { id: "codex", label: "Modern Codex", display: "Space Grotesk", body: "Inter" },
+];
+const DEFAULT_SYNC = { databaseURL: "", code: "", enabled: false };
+
+function mod(score) { return Math.floor((score - 10) / 2); }
+function fmt(n) { return n >= 0 ? `+${n}` : `${n}`; }
+function slugify(s) {
+  const base = s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  return base || `custom-${Date.now()}`;
+}
+function randomCode() { return Math.random().toString(36).slice(2, 8).toUpperCase(); }
+function profBonus(level) { return level < 5 ? 2 : level < 9 ? 3 : level < 13 ? 4 : level < 17 ? 5 : 6; }
+function avgHp(hitDie) { return Math.floor(hitDie / 2) + 1; }
+function rollHp(hitDie) { return 1 + Math.floor(Math.random() * hitDie); }
+function emptyAbilities() { return { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 }; }
+function emptyAssignments() { return { str: null, dex: null, con: null, int: null, wis: null, cha: null }; }
+
+/* ---- dice ---- */
+const DICE_TYPES = [4, 6, 8, 10, 12, 20, 100];
+function rollDie(sides) { return 1 + Math.floor(Math.random() * sides); }
+function rollDice(count, sides, modifier = 0) {
+  const rolls = Array.from({ length: count }, () => rollDie(sides));
+  const total = rolls.reduce((s, n) => s + n, 0) + modifier;
+  return { rolls, modifier, total, count, sides };
+}
+function parseDiceNotation(text) {
+  if (!text) return null;
+  const m = text.match(/(\d*)\s*d\s*(\d+)\s*(?:([+-])\s*(\d+))?/i);
+  if (!m) return null;
+  const count = m[1] ? parseInt(m[1], 10) : 1;
+  const sides = parseInt(m[2], 10);
+  const modifier = m[3] ? (m[3] === "-" ? -1 : 1) * parseInt(m[4], 10) : 0;
+  if (!count || !sides) return null;
+  return { count, sides, modifier };
+}
+function rollAbilityScore4d6() {
+  const rolls = [1, 2, 3, 4].map(() => rollDie(6));
+  rolls.sort((a, b) => a - b);
+  rolls.shift(); // drop lowest
+  return { total: rolls.reduce((s, n) => s + n, 0), rolls };
+}
+function generateRolledPool() {
+  return Array.from({ length: 6 }, () => rollAbilityScore4d6().total);
+}
+const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+
+function getBaseScores(char) {
+  if (char.abilityMethod === "roll" || char.abilityMethod === "array") {
+    const out = {};
+    ABILS.forEach((a) => {
+      const idx = char.assignments?.[a];
+      out[a] = idx !== null && idx !== undefined && char.rolledPool ? char.rolledPool[idx] : 8;
+    });
+    return out;
+  }
+  return char.scores;
+}
+
+/* ---- weapons (SRD stat data) ---- */
+const WEAPONS = [
+  // Simple Melee
+  { id: "club", name: "Club", category: "Simple Melee", damageDice: "1d4", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: ["Light"] },
+  { id: "dagger", name: "Dagger", category: "Simple Melee", damageDice: "1d4", damageType: "piercing", finesse: true, ranged: false, versatileDice: null, properties: ["Finesse", "Light", "Thrown"] },
+  { id: "greatclub", name: "Greatclub", category: "Simple Melee", damageDice: "1d8", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: ["Two-handed"] },
+  { id: "handaxe", name: "Handaxe", category: "Simple Melee", damageDice: "1d6", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Light", "Thrown"] },
+  { id: "javelin", name: "Javelin", category: "Simple Melee", damageDice: "1d6", damageType: "piercing", finesse: false, ranged: false, versatileDice: null, properties: ["Thrown"] },
+  { id: "light-hammer", name: "Light Hammer", category: "Simple Melee", damageDice: "1d4", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: ["Light", "Thrown"] },
+  { id: "mace", name: "Mace", category: "Simple Melee", damageDice: "1d6", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: [] },
+  { id: "quarterstaff", name: "Quarterstaff", category: "Simple Melee", damageDice: "1d6", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: "1d8", properties: ["Versatile"] },
+  { id: "sickle", name: "Sickle", category: "Simple Melee", damageDice: "1d4", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Light"] },
+  { id: "spear", name: "Spear", category: "Simple Melee", damageDice: "1d6", damageType: "piercing", finesse: false, ranged: false, versatileDice: "1d8", properties: ["Thrown", "Versatile"] },
+  // Simple Ranged
+  { id: "light-crossbow", name: "Light Crossbow", category: "Simple Ranged", damageDice: "1d8", damageType: "piercing", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition", "Two-handed"] },
+  { id: "dart", name: "Dart", category: "Simple Ranged", damageDice: "1d4", damageType: "piercing", finesse: true, ranged: true, versatileDice: null, properties: ["Finesse", "Thrown"] },
+  { id: "shortbow", name: "Shortbow", category: "Simple Ranged", damageDice: "1d6", damageType: "piercing", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition", "Two-handed"] },
+  { id: "sling", name: "Sling", category: "Simple Ranged", damageDice: "1d4", damageType: "bludgeoning", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition"] },
+  // Martial Melee
+  { id: "battleaxe", name: "Battleaxe", category: "Martial Melee", damageDice: "1d8", damageType: "slashing", finesse: false, ranged: false, versatileDice: "1d10", properties: ["Versatile"] },
+  { id: "flail", name: "Flail", category: "Martial Melee", damageDice: "1d8", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: [] },
+  { id: "glaive", name: "Glaive", category: "Martial Melee", damageDice: "1d10", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Heavy", "Reach", "Two-handed"] },
+  { id: "greataxe", name: "Greataxe", category: "Martial Melee", damageDice: "1d12", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Heavy", "Two-handed"] },
+  { id: "greatsword", name: "Greatsword", category: "Martial Melee", damageDice: "2d6", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Heavy", "Two-handed"] },
+  { id: "halberd", name: "Halberd", category: "Martial Melee", damageDice: "1d10", damageType: "slashing", finesse: false, ranged: false, versatileDice: null, properties: ["Heavy", "Reach", "Two-handed"] },
+  { id: "lance", name: "Lance", category: "Martial Melee", damageDice: "1d12", damageType: "piercing", finesse: false, ranged: false, versatileDice: null, properties: ["Reach"] },
+  { id: "longsword", name: "Longsword", category: "Martial Melee", damageDice: "1d8", damageType: "slashing", finesse: false, ranged: false, versatileDice: "1d10", properties: ["Versatile"] },
+  { id: "maul", name: "Maul", category: "Martial Melee", damageDice: "2d6", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: null, properties: ["Heavy", "Two-handed"] },
+  { id: "morningstar", name: "Morningstar", category: "Martial Melee", damageDice: "1d8", damageType: "piercing", finesse: false, ranged: false, versatileDice: null, properties: [] },
+  { id: "rapier", name: "Rapier", category: "Martial Melee", damageDice: "1d8", damageType: "piercing", finesse: true, ranged: false, versatileDice: null, properties: ["Finesse"] },
+  { id: "scimitar", name: "Scimitar", category: "Martial Melee", damageDice: "1d6", damageType: "slashing", finesse: true, ranged: false, versatileDice: null, properties: ["Finesse", "Light"] },
+  { id: "shortsword", name: "Shortsword", category: "Martial Melee", damageDice: "1d6", damageType: "piercing", finesse: true, ranged: false, versatileDice: null, properties: ["Finesse", "Light"] },
+  { id: "trident", name: "Trident", category: "Martial Melee", damageDice: "1d6", damageType: "piercing", finesse: false, ranged: false, versatileDice: "1d8", properties: ["Thrown", "Versatile"] },
+  { id: "war-pick", name: "War Pick", category: "Martial Melee", damageDice: "1d8", damageType: "piercing", finesse: false, ranged: false, versatileDice: null, properties: [] },
+  { id: "warhammer", name: "Warhammer", category: "Martial Melee", damageDice: "1d8", damageType: "bludgeoning", finesse: false, ranged: false, versatileDice: "1d10", properties: ["Versatile"] },
+  { id: "whip", name: "Whip", category: "Martial Melee", damageDice: "1d4", damageType: "slashing", finesse: true, ranged: false, versatileDice: null, properties: ["Finesse", "Reach"] },
+  // Martial Ranged
+  { id: "hand-crossbow", name: "Hand Crossbow", category: "Martial Ranged", damageDice: "1d6", damageType: "piercing", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition", "Light"] },
+  { id: "heavy-crossbow", name: "Heavy Crossbow", category: "Martial Ranged", damageDice: "1d10", damageType: "piercing", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition", "Heavy", "Two-handed"] },
+  { id: "longbow", name: "Longbow", category: "Martial Ranged", damageDice: "1d8", damageType: "piercing", finesse: false, ranged: true, versatileDice: null, properties: ["Ammunition", "Heavy", "Two-handed"] },
+];
+const WEAPON_CATEGORIES = ["Simple Melee", "Simple Ranged", "Martial Melee", "Martial Ranged"];
+
+function parseSimpleDice(str) {
+  const m = (str || "").match(/(\d+)\s*d\s*(\d+)/i);
+  if (!m) return null;
+  return { count: parseInt(m[1], 10), sides: parseInt(m[2], 10) };
+}
+function weaponAbility(item, finalScores) {
+  if (item.abilityOverride) return item.abilityOverride;
+  if (item.finesse) return finalScores.dex >= finalScores.str ? "dex" : "str";
+  return item.ranged ? "dex" : "str";
+}
+function computeWeaponAttack(item, finalScores, level) {
+  const ability = weaponAbility(item, finalScores);
+  const abilityMod = mod(finalScores[ability]);
+  const toHit = abilityMod + profBonus(level); // assumes proficiency
+  return { ability, abilityMod, toHit, dmgMod: abilityMod };
+}
+
+/* ============================================================
+   STORAGE HELPERS
+   ============================================================ */
+
+async function loadKey(key, fallback) {
+  try {
+    const res = await window.storage.get(key, false);
+    return res ? JSON.parse(res.value) : fallback;
+  } catch { return fallback; }
+}
+async function saveKey(key, value) {
+  try { await window.storage.set(key, JSON.stringify(value), false); }
+  catch (e) { console.error("save failed", key, e); }
+}
+
+/* ============================================================
+   CLOUD SYNC HELPERS (Firebase Realtime Database REST API)
+   ============================================================ */
+
+function syncPath(code) { return `dndforge/${encodeURIComponent(code)}.json`; }
+async function cloudPull(databaseURL, code) {
+  const res = await fetch(`${databaseURL.replace(/\/$/, "")}/${syncPath(code)}`);
+  if (!res.ok) throw new Error(`Pull failed (${res.status})`);
+  return await res.json();
+}
+async function cloudPush(databaseURL, code, payload) {
+  const res = await fetch(`${databaseURL.replace(/\/$/, "")}/${syncPath(code)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Push failed (${res.status})`);
+  return await res.json();
+}
+
+/* ============================================================
+   CHARACTER HELPERS
+   ============================================================ */
+
+function blankCharacter() {
+  return {
+    name: "", raceId: null, classId: null, subclassId: null,
+    abilityMethod: "pointbuy", // 'pointbuy' | 'roll' | 'array'
+    scores: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
+    rolledPool: [], assignments: emptyAssignments(),
+    levelHistory: [], // entries for levels 2+
+    currentHP: null, tempHP: 0, deathSaves: { success: 0, fail: 0 },
+    inventory: [], actions: [],
+  };
+}
+
+function getAsiBonusTotal(levelHistory) {
+  const out = emptyAbilities();
+  levelHistory.forEach((l) => {
+    if (l.asiChoice && l.asiChoice.type === "asi") {
+      ABILS.forEach((a) => { out[a] += l.asiChoice.abilities[a] || 0; });
+    }
+  });
+  return out;
+}
+
+/* ============================================================
+   MAIN APP
+   ============================================================ */
+
+function DndForge() {
+  const [tab, setTab] = useState("race");
+  const [char, setChar] = useState(blankCharacter());
+  const [roster, setRoster] = useState([]);
+  const [toast, setToast] = useState("");
+
+  const [races, setRaces] = useState(DEFAULT_RACES);
+  const [classes, setClasses] = useState(DEFAULT_CLASSES);
+  const [theme, setTheme] = useState(DEFAULT_THEME);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editingRace, setEditingRace] = useState(null);
+  const [editingClass, setEditingClass] = useState(null);
+  const [levelUpOpen, setLevelUpOpen] = useState(false);
+
+  const [syncConfig, setSyncConfig] = useState(DEFAULT_SYNC);
+  const [syncStatus, setSyncStatus] = useState("idle");
+  const [syncMessage, setSyncMessage] = useState("");
+
+  const selfTimestampRef = useRef(0);
+  const applyingRemoteRef = useRef(false);
+  const pushTimerRef = useRef(null);
+  const pollTimerRef = useRef(null);
+
+  const [rollHistory, setRollHistory] = useState([]);
+  const addRoll = (entry) => setRollHistory((prev) => [{ id: `${Date.now()}-${Math.random()}`, time: Date.now(), ...entry }, ...prev].slice(0, 30));
+
+  const [rollAnim, setRollAnim] = useState(null); // { label, notation, sides, modifier, combine, values, total, phase }
+  const tickRef = useRef(null);
+  const settleRef = useRef(null);
+  const hideRef = useRef(null);
+
+  const triggerRoll = (spec) => {
+    clearInterval(tickRef.current);
+    clearTimeout(settleRef.current);
+    clearTimeout(hideRef.current);
+
+    const count = Math.max(1, spec.count || 1);
+    const sides = spec.sides;
+    const modifier = spec.modifier || 0;
+    const combine = spec.combine || "sum";
+    const finalRolls = Array.from({ length: count }, () => rollDie(sides));
+    const total = combine === "max" ? Math.max(...finalRolls)
+      : combine === "min" ? Math.min(...finalRolls)
+      : finalRolls.reduce((s, n) => s + n, 0) + modifier;
+
+    setRollAnim({
+      label: spec.label, notation: spec.notation, sides, modifier, combine,
+      values: finalRolls.map(() => rollDie(sides)), phase: "rolling",
+    });
+
+    tickRef.current = setInterval(() => {
+      setRollAnim((prev) => (prev ? { ...prev, values: finalRolls.map(() => rollDie(sides)) } : prev));
+    }, 80);
+
+    settleRef.current = setTimeout(() => {
+      clearInterval(tickRef.current);
+      setRollAnim((prev) => (prev ? { ...prev, values: finalRolls, total, phase: "settled" } : prev));
+      addRoll({ label: spec.label, notation: spec.notation, rolls: finalRolls, modifier, total });
+    }, 650);
+
+    hideRef.current = setTimeout(() => setRollAnim(null), 650 + 2200);
+  };
+
+  useEffect(() => () => {
+    clearInterval(tickRef.current);
+    clearTimeout(settleRef.current);
+    clearTimeout(hideRef.current);
+  }, []);
+
+  const race = races.find((r) => r.id === char.raceId) || null;
+  const klass = classes.find((c) => c.id === char.classId) || null;
+  const subclass = klass?.subclasses?.find((s) => s.id === char.subclassId) || null;
+  const level = 1 + char.levelHistory.length;
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2200); };
+
+  /* ---- initial load ---- */
+  useEffect(() => {
+    (async () => {
+      const [r, c, roster0, theme0, sync0] = await Promise.all([
+        loadKey("dnd-forge:races", DEFAULT_RACES),
+        loadKey("dnd-forge:classes", DEFAULT_CLASSES),
+        loadKey("dnd-forge:roster", []),
+        loadKey("dnd-forge:theme", DEFAULT_THEME),
+        loadKey("dnd-forge:sync-config", DEFAULT_SYNC),
+      ]);
+      setRaces(r); setClasses(c); setRoster(roster0); setTheme(theme0); setSyncConfig(sync0);
+      selfTimestampRef.current = Date.now();
+      setDataLoaded(true);
+      if (sync0.enabled && sync0.databaseURL && sync0.code) {
+        doInitialSync(sync0, { races: r, classes: c, roster: roster0, theme: theme0 });
+      }
+    })();
+    // eslint-disable-next-line
+  }, []);
+
+  const doInitialSync = async (cfg, local) => {
+    setSyncStatus("syncing");
+    try {
+      const remote = await cloudPull(cfg.databaseURL, cfg.code);
+      if (remote && remote.updatedAt) {
+        applyingRemoteRef.current = true;
+        setRaces(remote.races || local.races);
+        setClasses(remote.classes || local.classes);
+        setRoster(remote.roster || local.roster);
+        setTheme(remote.theme || local.theme);
+        selfTimestampRef.current = remote.updatedAt;
+        setSyncStatus("synced"); setSyncMessage("Synced from cloud");
+      } else {
+        const payload = { ...local, updatedAt: Date.now() };
+        await cloudPush(cfg.databaseURL, cfg.code, payload);
+        selfTimestampRef.current = payload.updatedAt;
+        setSyncStatus("synced"); setSyncMessage("Uploaded local data as the starting point");
+      }
+    } catch (e) { setSyncStatus("error"); setSyncMessage(e.message || "Sync failed"); }
+  };
+
+  /* ---- auto-push on local change (debounced) ---- */
+  useEffect(() => {
+    if (!dataLoaded) return;
+    if (applyingRemoteRef.current) { applyingRemoteRef.current = false; return; }
+    saveKey("dnd-forge:races", races);
+    saveKey("dnd-forge:classes", classes);
+    saveKey("dnd-forge:roster", roster);
+    saveKey("dnd-forge:theme", theme);
+    if (!syncConfig.enabled || !syncConfig.databaseURL || !syncConfig.code) return;
+    clearTimeout(pushTimerRef.current);
+    pushTimerRef.current = setTimeout(async () => {
+      setSyncStatus("syncing");
+      try {
+        const payload = { races, classes, roster, theme, updatedAt: Date.now() };
+        await cloudPush(syncConfig.databaseURL, syncConfig.code, payload);
+        selfTimestampRef.current = payload.updatedAt;
+        setSyncStatus("synced"); setSyncMessage(`Pushed at ${new Date(payload.updatedAt).toLocaleTimeString()}`);
+      } catch (e) { setSyncStatus("error"); setSyncMessage(e.message || "Sync failed"); }
+    }, 700);
+    // eslint-disable-next-line
+  }, [races, classes, roster, theme, dataLoaded]);
+
+  /* ---- periodic pull ---- */
+  useEffect(() => {
+    clearInterval(pollTimerRef.current);
+    if (!syncConfig.enabled || !syncConfig.databaseURL || !syncConfig.code) return;
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const remote = await cloudPull(syncConfig.databaseURL, syncConfig.code);
+        if (remote && remote.updatedAt && remote.updatedAt > selfTimestampRef.current) {
+          applyingRemoteRef.current = true;
+          setRaces(remote.races || races);
+          setClasses(remote.classes || classes);
+          setRoster(remote.roster || roster);
+          setTheme(remote.theme || theme);
+          selfTimestampRef.current = remote.updatedAt;
+          setSyncStatus("synced"); setSyncMessage(`Pulled changes at ${new Date(remote.updatedAt).toLocaleTimeString()}`);
+        }
+      } catch (e) { /* stay quiet on background errors */ }
+    }, 15000);
+    return () => clearInterval(pollTimerRef.current);
+    // eslint-disable-next-line
+  }, [syncConfig]);
+
+  const connectSync = async (cfg) => {
+    const next = { ...cfg, enabled: true };
+    setSyncConfig(next);
+    await saveKey("dnd-forge:sync-config", next);
+    await doInitialSync(next, { races, classes, roster, theme });
+  };
+  const disconnectSync = async () => {
+    const next = { ...syncConfig, enabled: false };
+    setSyncConfig(next);
+    await saveKey("dnd-forge:sync-config", next);
+    setSyncStatus("idle"); setSyncMessage("Disconnected — this device is local-only now");
+  };
+  const manualSync = async () => {
+    if (!syncConfig.enabled) return;
+    setSyncStatus("syncing");
+    try {
+      const payload = { races, classes, roster, theme, updatedAt: Date.now() };
+      await cloudPush(syncConfig.databaseURL, syncConfig.code, payload);
+      selfTimestampRef.current = payload.updatedAt;
+      setSyncStatus("synced"); setSyncMessage(`Synced at ${new Date(payload.updatedAt).toLocaleTimeString()}`);
+    } catch (e) { setSyncStatus("error"); setSyncMessage(e.message || "Sync failed"); }
+  };
+
+  /* ---- ability scores ---- */
+  const spent = useMemo(() => ABILS.reduce((sum, a) => sum + (POINT_BUY_COST[char.scores[a]] ?? 0), 0), [char.scores]);
+  const remaining = POINT_BUY_BUDGET - spent;
+  const asiBonus = useMemo(() => getAsiBonusTotal(char.levelHistory), [char.levelHistory]);
+  const baseScores = useMemo(() => getBaseScores(char), [char.abilityMethod, char.scores, char.rolledPool, char.assignments]);
+  const finalScores = useMemo(() => {
+    const out = {};
+    ABILS.forEach((a) => { out[a] = baseScores[a] + (race?.bonuses?.[a] || 0) + asiBonus[a]; });
+    return out;
+  }, [baseScores, race, asiBonus]);
+
+  const setAbilityMethod = (m) => {
+    setChar((c) => {
+      if (m === "pointbuy") return { ...c, abilityMethod: m };
+      if (m === "roll") return { ...c, abilityMethod: m, rolledPool: generateRolledPool(), assignments: emptyAssignments() };
+      return { ...c, abilityMethod: m, rolledPool: [...STANDARD_ARRAY], assignments: emptyAssignments() };
+    });
+  };
+  const rerollPool = () => setChar((c) => ({ ...c, rolledPool: generateRolledPool(), assignments: emptyAssignments() }));
+  const assignAbility = (ability, idx) => setChar((c) => ({ ...c, assignments: { ...c.assignments, [ability]: idx === "" ? null : Number(idx) } }));
+
+  const conMod = mod(finalScores.con);
+  const maxHP = useMemo(() => {
+    if (!klass) return null;
+    const base = klass.hitDie + conMod;
+    const rest = char.levelHistory.reduce((sum, l) => sum + (l.hpRoll || 0) + conMod, 0);
+    return base + rest;
+  }, [klass, conMod, char.levelHistory]);
+  const currentHP = char.currentHP === null ? maxHP : Math.min(char.currentHP, maxHP ?? char.currentHP);
+  const ac = 10 + mod(finalScores.dex);
+
+  const bumpScore = (a, dir) => {
+    setChar((c) => {
+      const cur = c.scores[a]; const next = cur + dir;
+      if (next < 8 || next > 15) return c;
+      const nextCost = POINT_BUY_COST[next] ?? 0, curCost = POINT_BUY_COST[cur] ?? 0;
+      if (dir > 0 && spent - curCost + nextCost > POINT_BUY_BUDGET) return c;
+      return { ...c, scores: { ...c.scores, [a]: next } };
+    });
+  };
+
+  /* ---- HP controls ---- */
+  const applyDamage = (n) => {
+    setChar((c) => {
+      let temp = c.tempHP, dmg = n;
+      if (temp > 0) { const absorbed = Math.min(temp, dmg); temp -= absorbed; dmg -= absorbed; }
+      const cur = (c.currentHP === null ? maxHP : c.currentHP);
+      return { ...c, tempHP: temp, currentHP: Math.max(0, cur - dmg) };
+    });
+  };
+  const applyHeal = (n) => {
+    setChar((c) => {
+      const cur = (c.currentHP === null ? maxHP : c.currentHP);
+      return { ...c, currentHP: Math.min(maxHP ?? cur + n, cur + n) };
+    });
+  };
+  const setTempHP = (n) => setChar((c) => ({ ...c, tempHP: Math.max(0, n) }));
+  const resetHPToMax = () => setChar((c) => ({ ...c, currentHP: maxHP, deathSaves: { success: 0, fail: 0 } }));
+  const setDeathSave = (kind, val) => setChar((c) => ({ ...c, deathSaves: { ...c.deathSaves, [kind]: val } }));
+
+  /* ---- inventory / actions ---- */
+  const addItem = (item) => setChar((c) => ({ ...c, inventory: [...c.inventory, { id: `${Date.now()}`, qty: 1, equipped: false, ...item }] }));
+  const updateItem = (id, patch) => setChar((c) => ({ ...c, inventory: c.inventory.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
+  const deleteItem = (id) => setChar((c) => ({ ...c, inventory: c.inventory.filter((i) => i.id !== id) }));
+
+  const addAction = (action) => setChar((c) => ({ ...c, actions: [...c.actions, { id: `${Date.now()}`, type: "Attack", ...action }] }));
+  const updateAction = (id, patch) => setChar((c) => ({ ...c, actions: c.actions.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
+  const deleteAction = (id) => setChar((c) => ({ ...c, actions: c.actions.filter((a) => a.id !== id) }));
+
+  /* ---- roster ---- */
+  const saveCharacter = useCallback(async () => {
+    if (!char.name.trim()) { showToast("Give your character a name first"); return; }
+    const entry = { id: `${Date.now()}`, ...char, name: char.name.trim(), currentHP: currentHP };
+    setRoster((prev) => [entry, ...prev]);
+    showToast(`${char.name.trim()} saved to your roster`);
+  }, [char, currentHP]);
+
+  const loadCharacter = async (entry) => {
+    setChar({ ...blankCharacter(), ...entry });
+    setTab("sheet");
+    showToast(`Loaded ${entry.name}`);
+  };
+  const deleteCharacterFromRoster = async (id) => setRoster((prev) => prev.filter((r) => r.id !== id));
+  const resetBuilder = () => { setChar(blankCharacter()); setTab("race"); };
+
+  /* ---- races / classes editing ---- */
+  const upsertRace = async (raceObj) => {
+    setRaces((prev) => { const exists = prev.some((r) => r.id === raceObj.id); return exists ? prev.map((r) => (r.id === raceObj.id ? raceObj : r)) : [...prev, raceObj]; });
+    setEditingRace(null); showToast(`${raceObj.name} saved`);
+  };
+  const deleteRace = async (id) => {
+    setRaces((prev) => prev.filter((r) => r.id !== id));
+    if (char.raceId === id) setChar((c) => ({ ...c, raceId: null }));
+    setEditingRace(null);
+  };
+  const resetRaces = async () => { setRaces(DEFAULT_RACES); showToast("Races reset to defaults"); };
+
+  const upsertClass = async (classObj) => {
+    setClasses((prev) => { const exists = prev.some((c) => c.id === classObj.id); return exists ? prev.map((c) => (c.id === classObj.id ? classObj : c)) : [...prev, classObj]; });
+    setEditingClass(null); showToast(`${classObj.name} saved`);
+  };
+  const deleteClass = async (id) => {
+    setClasses((prev) => prev.filter((c) => c.id !== id));
+    if (char.classId === id) setChar((c) => ({ ...c, classId: null, subclassId: null }));
+    setEditingClass(null);
+  };
+  const resetClasses = async () => { setClasses(DEFAULT_CLASSES); showToast("Classes reset to defaults"); };
+
+  const addCustomSubclass = (classId, sub) => {
+    setClasses((prev) => prev.map((c) => (c.id === classId ? { ...c, subclasses: [...(c.subclasses || []), sub] } : c)));
+  };
+
+  /* ---- level up ---- */
+  const confirmLevelUp = (entry) => {
+    setChar((c) => {
+      const next = { ...c, levelHistory: [...c.levelHistory, entry] };
+      if (entry.subclassId) next.subclassId = entry.subclassId;
+      const wasFull = c.currentHP === null || c.currentHP >= (maxHP ?? 0);
+      if (wasFull) next.currentHP = null; // stays "at max", recomputed reactively
+      else next.currentHP = (c.currentHP ?? 0) + entry.hpRoll + conMod;
+      return next;
+    });
+    setLevelUpOpen(false);
+    showToast(`Reached level ${level + 1}!`);
+  };
+  const undoLevelUp = () => {
+    setChar((c) => {
+      if (c.levelHistory.length === 0) return c;
+      const popped = c.levelHistory[c.levelHistory.length - 1];
+      const nextHistory = c.levelHistory.slice(0, -1);
+      const next = { ...c, levelHistory: nextHistory };
+      if (popped.subclassId && !nextHistory.some((l) => l.subclassId)) next.subclassId = null;
+      return next;
+    });
+  };
+
+  const updateTheme = (patch) => setTheme((t) => ({ ...t, ...patch }));
+  const resetTheme = () => { setTheme(DEFAULT_THEME); showToast("Theme reset to defaults"); };
+
+  const fontPreset = FONT_PRESETS.find((f) => f.id === theme.fontPreset) || FONT_PRESETS[0];
+  const rootVars = {
+    "--bg": theme.bg, "--panel": theme.panel, "--panelAlt": theme.panelAlt, "--border": theme.border,
+    "--parchment": theme.parchment, "--parchmentDim": theme.parchmentDim, "--gold": theme.gold, "--burgundy": theme.burgundy,
+    "--font-display": `'${fontPreset.display}', serif`, "--font-body": `'${fontPreset.body}', Georgia, serif`,
+  };
+
+  return (
+    <div className="df-app" style={{ ...styles.app, ...rootVars }}>
+      <style>{GLOBAL_CSS}</style>
+      <div style={styles.frame}>
+        <Header name={char.name} setName={(v) => setChar((c) => ({ ...c, name: v }))} onNew={resetBuilder}
+          editMode={editMode} setEditMode={setEditMode} level={level}
+          syncStatus={syncConfig.enabled ? syncStatus : null} />
+        <TabBar tab={tab} setTab={setTab} rosterCount={roster.length} />
+
+        <div style={styles.body}>
+          {editMode && <div style={styles.editBanner}>✎ Edit mode is on — click any card to change it, or add a new one.</div>}
+
+          {tab === "race" && (
+            <RacePicker races={races} raceId={char.raceId} setRaceId={(id) => setChar((c) => ({ ...c, raceId: id }))}
+              onNext={() => setTab("class")} editMode={editMode} onEdit={setEditingRace} onReset={resetRaces} />
+          )}
+          {tab === "class" && (
+            <ClassPicker classes={classes} classId={char.classId}
+              setClassId={(id) => setChar((c) => ({ ...c, classId: id, subclassId: null }))}
+              onNext={() => setTab("abilities")} editMode={editMode} onEdit={setEditingClass} onReset={resetClasses} />
+          )}
+          {tab === "abilities" && (
+            <AbilityBuilder char={char} scores={char.scores} bumpScore={bumpScore} remaining={remaining} race={race}
+              finalScores={finalScores} onNext={() => setTab("sheet")}
+              onSetMethod={setAbilityMethod} onReroll={rerollPool} onAssign={assignAbility} />
+          )}
+          {tab === "sheet" && (
+            <Sheet char={char} race={race} klass={klass} subclass={subclass} level={level}
+              finalScores={finalScores} maxHP={maxHP} currentHP={currentHP} ac={ac} conMod={conMod}
+              onDamage={applyDamage} onHeal={applyHeal} onSetTemp={setTempHP} onResetHP={resetHPToMax}
+              onDeathSave={setDeathSave} onSave={saveCharacter}
+              onOpenLevelUp={() => setLevelUpOpen(true)} onUndoLevel={undoLevelUp} />
+          )}
+          {tab === "inventory" && (
+            <InventoryPanel items={char.inventory} onAdd={addItem} onUpdate={updateItem} onDelete={deleteItem} />
+          )}
+          {tab === "actions" && (
+            <ActionsPanel actions={char.actions} inventory={char.inventory} finalScores={finalScores} level={level}
+              onAdd={addAction} onUpdate={updateAction} onDelete={deleteAction} onRoll={triggerRoll} />
+          )}
+          {tab === "dice" && <DicePanel history={rollHistory} onRoll={triggerRoll} onClear={() => setRollHistory([])} />}
+          {tab === "roster" && (
+            <Roster roster={roster} loaded={dataLoaded} races={races} classes={classes}
+              onLoad={loadCharacter} onDelete={deleteCharacterFromRoster} />
+          )}
+          {tab === "theme" && <ThemePanel theme={theme} updateTheme={updateTheme} resetTheme={resetTheme} />}
+          {tab === "sync" && (
+            <SyncPanel syncConfig={syncConfig} syncStatus={syncStatus} syncMessage={syncMessage}
+              onConnect={connectSync} onDisconnect={disconnectSync} onManualSync={manualSync} />
+          )}
+        </div>
+      </div>
+      {toast && <div style={styles.toast}>{toast}</div>}
+      {rollAnim && <RollOverlay anim={rollAnim} />}
+
+      {editingRace && (
+        <RaceEditor initial={editingRace === "new" ? null : editingRace} onSave={upsertRace}
+          onDelete={editingRace !== "new" ? () => deleteRace(editingRace.id) : null} onClose={() => setEditingRace(null)} />
+      )}
+      {editingClass && (
+        <ClassEditor initial={editingClass === "new" ? null : editingClass} onSave={upsertClass}
+          onDelete={editingClass !== "new" ? () => deleteClass(editingClass.id) : null} onClose={() => setEditingClass(null)} />
+      )}
+      {levelUpOpen && klass && (
+        <LevelUpModal
+          klass={klass} pendingLevel={level + 1} finalScoresBase={{ scores: char.scores, raceBonus: race?.bonuses || {}, asiBonus }}
+          hasSubclass={!!char.subclassId}
+          onAddCustomSubclass={(sub) => addCustomSubclass(klass.id, sub)}
+          onConfirm={confirmLevelUp} onClose={() => setLevelUpOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   HEADER / TABS
+   ============================================================ */
+
+function Header({ name, setName, onNew, editMode, setEditMode, level, syncStatus }) {
+  const dot = syncStatus === "synced" ? "🟢" : syncStatus === "syncing" ? "🟡" : syncStatus === "error" ? "🔴" : null;
+  return (
+    <div className="df-header" style={styles.header}>
+      <div style={styles.crest}>⚜</div>
+      <div style={{ flex: 1, minWidth: 160 }}>
+        <div style={styles.title}>
+          DND Forge <span style={styles.levelBadge}>Lvl {level}</span> {dot && <span title={`Sync: ${syncStatus}`} style={{ fontSize: 10 }}>{dot}</span>}
+        </div>
+        <input style={styles.nameInput} placeholder="Name your character…" value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+      <div style={styles.headerBtnRow}>
+        <button style={{ ...styles.editToggle, ...(editMode ? styles.editToggleActive : {}) }}
+          onClick={() => setEditMode((v) => !v)} title="Edit races and classes">✎ {editMode ? "Editing" : "Customize"}</button>
+        <button style={styles.newBtn} onClick={onNew} title="Start a new character">New</button>
+      </div>
+    </div>
+  );
+}
+
+function TabBar({ tab, setTab, rosterCount }) {
+  const tabs = [
+    { id: "race", label: "Race" }, { id: "class", label: "Class" }, { id: "abilities", label: "Abilities" },
+    { id: "sheet", label: "Sheet" }, { id: "inventory", label: "Items" }, { id: "actions", label: "Actions" },
+    { id: "dice", label: "Dice" },
+    { id: "roster", label: `Roster${rosterCount ? ` (${rosterCount})` : ""}` },
+    { id: "theme", label: "Theme" }, { id: "sync", label: "Sync" },
+  ];
+  return (
+    <div className="df-tabbar" style={styles.tabBar}>
+      {tabs.map((t) => (
+        <button key={t.id} onClick={() => setTab(t.id)} style={{ ...styles.tabBtn, ...(tab === t.id ? styles.tabBtnActive : {}) }}>{t.label}</button>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   RACE / CLASS PICKERS
+   ============================================================ */
+
+function RacePicker({ races, raceId, setRaceId, onNext, editMode, onEdit, onReset }) {
+  return (
+    <div>
+      <SectionLabel eyebrow="Chapter I" title="Choose a Lineage" />
+      {editMode && <button style={styles.resetLink} onClick={onReset}>Reset races to defaults</button>}
+      <div className="df-grid" style={styles.grid}>
+        {races.map((r) => (
+          <div key={r.id} onClick={() => (editMode ? onEdit(r) : setRaceId(r.id))}
+            style={{ ...styles.card, ...(raceId === r.id ? styles.cardActive : {}), ...(editMode ? styles.cardEditable : {}) }}>
+            {editMode && <div style={styles.editPencil}>✎</div>}
+            <div style={styles.cardGlyph}>{r.glyph}</div>
+            <div style={styles.cardName}>{r.name}</div>
+            <div style={styles.cardBlurb}>{r.blurb}</div>
+            <div style={styles.cardMeta}>
+              {Object.entries(r.bonuses || {}).map(([a, v]) => <span key={a} style={styles.pill}>{a.toUpperCase()} {fmt(v)}</span>)}
+              <span style={styles.pillDim}>{r.size}</span><span style={styles.pillDim}>{r.speed} ft.</span>
+            </div>
+            {raceId === r.id && !editMode && <ul style={styles.traitList}>{r.traits.map((t, i) => <li key={i}>{t}</li>)}</ul>}
+          </div>
+        ))}
+        {editMode && (
+          <div onClick={() => onEdit("new")} style={{ ...styles.card, ...styles.cardAdd }}>
+            <div style={styles.cardGlyph}>+</div><div style={styles.cardName}>Add Custom Race</div>
+          </div>
+        )}
+      </div>
+      {!editMode && <NextButton disabled={!raceId} onClick={onNext} label="Choose a Class →" />}
+    </div>
+  );
+}
+
+function ClassPicker({ classes, classId, setClassId, onNext, editMode, onEdit, onReset }) {
+  return (
+    <div>
+      <SectionLabel eyebrow="Chapter II" title="Choose a Calling" />
+      {editMode && <button style={styles.resetLink} onClick={onReset}>Reset classes to defaults</button>}
+      <div className="df-grid" style={styles.grid}>
+        {classes.map((c) => (
+          <div key={c.id} onClick={() => (editMode ? onEdit(c) : setClassId(c.id))}
+            style={{ ...styles.card, ...(classId === c.id ? styles.cardActive : {}), ...(editMode ? styles.cardEditable : {}) }}>
+            {editMode && <div style={styles.editPencil}>✎</div>}
+            <div style={styles.cardGlyph}>{c.glyph}</div>
+            <div style={styles.cardName}>{c.name}</div>
+            <div style={styles.cardBlurb}>{c.blurb}</div>
+            <div style={styles.cardMeta}>
+              <span style={styles.pill}>d{c.hitDie} Hit Die</span>
+              <span style={styles.pillDim}>Saves: {(c.saves || []).map((s) => s.toUpperCase()).join(", ")}</span>
+            </div>
+            {classId === c.id && !editMode && <ul style={styles.traitList}>{c.features.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+          </div>
+        ))}
+        {editMode && (
+          <div onClick={() => onEdit("new")} style={{ ...styles.card, ...styles.cardAdd }}>
+            <div style={styles.cardGlyph}>+</div><div style={styles.cardName}>Add Custom Class</div>
+          </div>
+        )}
+      </div>
+      {!editMode && <NextButton disabled={!classId} onClick={onNext} label="Set Ability Scores →" />}
+    </div>
+  );
+}
+
+/* ============================================================
+   RACE / CLASS EDITORS
+   ============================================================ */
+
+function ModalShell({ title, onClose, onDelete, children, wide }) {
+  return (
+    <div className="df-modal-overlay" style={styles.modalOverlay} onClick={onClose}>
+      <div className="df-modal-card" style={{ ...styles.modalCard, ...(wide ? { maxWidth: 620 } : {}) }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <div style={styles.modalTitle}>{title}</div>
+          <button style={styles.modalClose} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+        {onDelete && <button style={styles.modalDelete} onClick={onDelete}>Delete this entry</button>}
+      </div>
+    </div>
+  );
+}
+
+function RaceEditor({ initial, onSave, onDelete, onClose }) {
+  const [form, setForm] = useState(initial || {
+    id: "", name: "", glyph: "✦", size: "Medium", speed: 30,
+    bonuses: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 }, traits: [""], blurb: "",
+  });
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const setBonus = (a, v) => setForm((f) => ({ ...f, bonuses: { ...f.bonuses, [a]: Number(v) || 0 } }));
+  const setTraitsText = (text) => setForm((f) => ({ ...f, traits: text.split("\n") }));
+  const handleSave = () => {
+    if (!form.name.trim()) return;
+    const id = form.id || slugify(form.name);
+    onSave({ ...form, id, speed: Number(form.speed) || 30, traits: form.traits.map((t) => t.trim()).filter(Boolean) });
+  };
+  return (
+    <ModalShell title={initial ? `Edit ${initial.name}` : "New Race"} onClose={onClose} onDelete={onDelete}>
+      <FormRow label="Name"><input style={styles.input} value={form.name} onChange={(e) => set({ name: e.target.value })} /></FormRow>
+      <FormRow label="Glyph (one symbol/emoji)"><input style={styles.input} value={form.glyph} onChange={(e) => set({ glyph: e.target.value })} /></FormRow>
+      <FormRow label="Flavor line"><input style={styles.input} value={form.blurb} onChange={(e) => set({ blurb: e.target.value })} /></FormRow>
+      <div className="df-form-two-up" style={styles.formTwoUp}>
+        <FormRow label="Size">
+          <select style={styles.input} value={form.size} onChange={(e) => set({ size: e.target.value })}>
+            {["Small", "Medium", "Large"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FormRow>
+        <FormRow label="Speed (ft.)"><input style={styles.input} type="number" value={form.speed} onChange={(e) => set({ speed: e.target.value })} /></FormRow>
+      </div>
+      <FormRow label="Ability bonuses">
+        <div className="df-bonus-grid" style={styles.bonusGrid}>
+          {ABILS.map((a) => (
+            <div key={a} style={styles.bonusItem}>
+              <span style={styles.bonusLabel}>{a.toUpperCase()}</span>
+              <input style={styles.bonusInput} type="number" value={form.bonuses[a] || 0} onChange={(e) => setBonus(a, e.target.value)} />
+            </div>
+          ))}
+        </div>
+      </FormRow>
+      <FormRow label="Traits (one per line)">
+        <textarea style={styles.textarea} rows={4} value={form.traits.join("\n")} onChange={(e) => setTraitsText(e.target.value)} />
+      </FormRow>
+      <button style={styles.saveBtn} onClick={handleSave}>Save Race</button>
+    </ModalShell>
+  );
+}
+
+function ClassEditor({ initial, onSave, onDelete, onClose }) {
+  const [form, setForm] = useState(initial || {
+    id: "", name: "", glyph: "⚔", hitDie: 8, primary: "str", saves: [], armor: "", weapons: "",
+    features: [""], blurb: "", asiLevels: [4, 8, 12, 16, 19], subclassLevel: 3, levelFeatures: {}, subclasses: [],
+  });
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const setFeaturesText = (text) => setForm((f) => ({ ...f, features: text.split("\n") }));
+  const toggleSave = (a) => setForm((f) => ({ ...f, saves: f.saves.includes(a) ? f.saves.filter((s) => s !== a) : [...f.saves, a] }));
+  const setAsiText = (text) => setForm((f) => ({ ...f, asiLevels: text.split(",").map((n) => parseInt(n.trim(), 10)).filter((n) => !isNaN(n)) }));
+  const setLevelFeaturesText = (text) => {
+    const map = {};
+    text.split("\n").forEach((line) => {
+      const m = line.match(/^\s*(\d+)\s*:\s*(.+)$/);
+      if (m) { const lvl = m[1]; map[lvl] = map[lvl] ? [...map[lvl], m[2].trim()] : [m[2].trim()]; }
+    });
+    set({ levelFeatures: map });
+  };
+  const levelFeaturesText = Object.entries(form.levelFeatures || {})
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .flatMap(([lvl, feats]) => feats.map((f) => `${lvl}: ${f}`)).join("\n");
+
+  const handleSave = () => {
+    if (!form.name.trim()) return;
+    const id = form.id || slugify(form.name);
+    onSave({ ...form, id, hitDie: Number(form.hitDie) || 8, features: form.features.map((t) => t.trim()).filter(Boolean), subclassLevel: Number(form.subclassLevel) || 3 });
+  };
+  return (
+    <ModalShell title={initial ? `Edit ${initial.name}` : "New Class"} onClose={onClose} onDelete={onDelete} wide>
+      <FormRow label="Name"><input style={styles.input} value={form.name} onChange={(e) => set({ name: e.target.value })} /></FormRow>
+      <FormRow label="Glyph (one symbol/emoji)"><input style={styles.input} value={form.glyph} onChange={(e) => set({ glyph: e.target.value })} /></FormRow>
+      <FormRow label="Flavor line"><input style={styles.input} value={form.blurb} onChange={(e) => set({ blurb: e.target.value })} /></FormRow>
+      <div className="df-form-two-up" style={styles.formTwoUp}>
+        <FormRow label="Hit Die">
+          <select style={styles.input} value={form.hitDie} onChange={(e) => set({ hitDie: e.target.value })}>
+            {[6, 8, 10, 12].map((d) => <option key={d} value={d}>d{d}</option>)}
+          </select>
+        </FormRow>
+        <FormRow label="Primary ability"><input style={styles.input} value={form.primary} onChange={(e) => set({ primary: e.target.value })} /></FormRow>
+      </div>
+      <FormRow label="Saving throw proficiencies">
+        <div style={styles.saveChips}>
+          {ABILS.map((a) => (
+            <button key={a} type="button" onClick={() => toggleSave(a)} style={{ ...styles.saveChip, ...(form.saves.includes(a) ? styles.saveChipActive : {}) }}>{a.toUpperCase()}</button>
+          ))}
+        </div>
+      </FormRow>
+      <FormRow label="Armor proficiencies"><input style={styles.input} value={form.armor} onChange={(e) => set({ armor: e.target.value })} /></FormRow>
+      <FormRow label="Weapon proficiencies"><input style={styles.input} value={form.weapons} onChange={(e) => set({ weapons: e.target.value })} /></FormRow>
+      <FormRow label="Level 1 features (one per line)">
+        <textarea style={styles.textarea} rows={3} value={form.features.join("\n")} onChange={(e) => setFeaturesText(e.target.value)} />
+      </FormRow>
+      <div className="df-form-two-up" style={styles.formTwoUp}>
+        <FormRow label="Ability Score Improvement levels (comma-separated)">
+          <input style={styles.input} value={(form.asiLevels || []).join(", ")} onChange={(e) => setAsiText(e.target.value)} />
+        </FormRow>
+        <FormRow label="Subclass chosen at level">
+          <input style={styles.input} type="number" value={form.subclassLevel} onChange={(e) => set({ subclassLevel: e.target.value })} />
+        </FormRow>
+      </div>
+      <FormRow label="Other level features — one per line, format 'level: feature text'">
+        <textarea style={styles.textarea} rows={3} placeholder="5: Extra Attack — attack twice on your turn" value={levelFeaturesText} onChange={(e) => setLevelFeaturesText(e.target.value)} />
+      </FormRow>
+      <div style={{ fontSize: 12, color: "var(--parchmentDim)", marginBottom: 10 }}>
+        Subclasses ({(form.subclasses || []).length}) can be added while leveling up this class on the Sheet tab.
+      </div>
+      <button style={styles.saveBtn} onClick={handleSave}>Save Class</button>
+    </ModalShell>
+  );
+}
+
+function FormRow({ label, children }) {
+  return <div style={styles.formRow}><label style={styles.formLabel}>{label}</label>{children}</div>;
+}
+
+/* ============================================================
+   LEVEL UP MODAL
+   ============================================================ */
+
+function LevelUpModal({ klass, pendingLevel, finalScoresBase, hasSubclass, onAddCustomSubclass, onConfirm, onClose }) {
+  const [hpChoice, setHpChoice] = useState(null); // { method, value }
+  const [choiceType, setChoiceType] = useState("asi");
+  const [asiDraft, setAsiDraft] = useState(emptyAbilities());
+  const [featName, setFeatName] = useState("");
+  const [featDesc, setFeatDesc] = useState("");
+  const [subclassDraft, setSubclassDraft] = useState(null);
+  const [addingCustomSub, setAddingCustomSub] = useState(false);
+  const [customSubName, setCustomSubName] = useState("");
+  const [customSubBlurb, setCustomSubBlurb] = useState("");
+  const [customSubFeatures, setCustomSubFeatures] = useState("");
+
+  const isAsiLevel = (klass.asiLevels || []).includes(pendingLevel);
+  const needsSubclass = klass.subclassLevel === pendingLevel && !hasSubclass;
+
+  const pointsUsed = ABILS.reduce((s, a) => s + asiDraft[a], 0);
+  const remaining = 2 - pointsUsed;
+
+  const currentTotal = (a) => finalScoresBase.scores[a] + (finalScoresBase.raceBonus[a] || 0) + finalScoresBase.asiBonus[a];
+
+  const incAbility = (a) => {
+    if (remaining <= 0) return;
+    if (currentTotal(a) + asiDraft[a] + 1 > 20) return;
+    setAsiDraft((d) => ({ ...d, [a]: d[a] + 1 }));
+  };
+  const decAbility = (a) => {
+    if (asiDraft[a] <= 0) return;
+    setAsiDraft((d) => ({ ...d, [a]: d[a] - 1 }));
+  };
+
+  const levelFeatures = klass.levelFeatures?.[pendingLevel] || [];
+  const activeSubclassId = subclassDraft; // only relevant if choosing this level
+  const subclassFeaturesThisLevel = (klass.subclasses || [])
+    .flatMap((s) => (s.features || []).filter((f) => f.level === pendingLevel).map((f) => ({ ...f, subclassName: s.name })));
+
+  const asiComplete = !isAsiLevel || (choiceType === "asi" ? pointsUsed === 2 : featName.trim().length > 0);
+  const subclassComplete = !needsSubclass || !!subclassDraft;
+  const canConfirm = !!hpChoice && asiComplete && subclassComplete;
+
+  const handleAddCustomSub = () => {
+    if (!customSubName.trim()) return;
+    const sub = {
+      id: slugify(customSubName), name: customSubName.trim(), blurb: customSubBlurb.trim(),
+      features: customSubFeatures.split("\n").map((t) => t.trim()).filter(Boolean).map((text) => ({ level: klass.subclassLevel, text })),
+    };
+    onAddCustomSubclass(sub);
+    setSubclassDraft(sub.id);
+    setAddingCustomSub(false);
+    setCustomSubName(""); setCustomSubBlurb(""); setCustomSubFeatures("");
+  };
+
+  const handleConfirm = () => {
+    const entry = {
+      level: pendingLevel, hpRoll: hpChoice.value, hpMethod: hpChoice.method,
+      asiChoice: isAsiLevel ? (choiceType === "asi" ? { type: "asi", abilities: asiDraft } : { type: "feat", name: featName.trim(), description: featDesc.trim() }) : null,
+      subclassId: needsSubclass ? subclassDraft : null,
+    };
+    onConfirm(entry);
+  };
+
+  return (
+    <ModalShell title={`Level Up — reach Level ${pendingLevel}`} onClose={onClose} wide>
+      <div style={styles.levelUpSection}>
+        <div style={styles.panelTitle}>Hit Points</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button style={styles.saveBtn} onClick={() => setHpChoice({ method: "avg", value: avgHp(klass.hitDie) })}>
+            Take Average ({avgHp(klass.hitDie)})
+          </button>
+          <button style={styles.saveBtn} onClick={() => setHpChoice({ method: "roll", value: rollHp(klass.hitDie) })}>
+            Roll d{klass.hitDie}
+          </button>
+          {hpChoice && <span style={{ color: "var(--gold)", fontFamily: "var(--font-display)" }}>+{hpChoice.value} HP {hpChoice.method === "roll" ? "(rolled — click Roll again to reroll)" : ""}</span>}
+        </div>
+      </div>
+
+      {isAsiLevel && (
+        <div style={styles.levelUpSection}>
+          <div style={styles.panelTitle}>Ability Score Improvement or Feat</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button style={{ ...styles.fontChip, ...(choiceType === "asi" ? styles.fontChipActive : {}) }} onClick={() => setChoiceType("asi")}>Ability Scores</button>
+            <button style={{ ...styles.fontChip, ...(choiceType === "feat" ? styles.fontChipActive : {}) }} onClick={() => setChoiceType("feat")}>Feat</button>
+          </div>
+          {choiceType === "asi" ? (
+            <div>
+              <div style={{ fontSize: 12.5, color: "var(--parchmentDim)", marginBottom: 8 }}>{remaining} point{remaining === 1 ? "" : "s"} remaining — spread up to +2 across your abilities.</div>
+              <div className="df-bonus-grid" style={styles.bonusGrid}>
+                {ABILS.map((a) => (
+                  <div key={a} style={styles.bonusItem}>
+                    <span style={styles.bonusLabel}>{a.toUpperCase()}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button className="df-stepbtn" style={styles.stepBtnSmall} onClick={() => decAbility(a)} disabled={asiDraft[a] <= 0}>−</button>
+                      <span style={{ minWidth: 14, textAlign: "center" }}>{asiDraft[a]}</span>
+                      <button className="df-stepbtn" style={styles.stepBtnSmall} onClick={() => incAbility(a)} disabled={remaining <= 0 || currentTotal(a) + asiDraft[a] >= 20}>+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <FormRow label="Feat name"><input style={styles.input} value={featName} onChange={(e) => setFeatName(e.target.value)} placeholder="e.g. Sharpshooter" /></FormRow>
+              <FormRow label="What it does (your notes)"><textarea style={styles.textarea} rows={2} value={featDesc} onChange={(e) => setFeatDesc(e.target.value)} /></FormRow>
+            </div>
+          )}
+        </div>
+      )}
+
+      {needsSubclass && (
+        <div style={styles.levelUpSection}>
+          <div style={styles.panelTitle}>Choose a Subclass</div>
+          <div className="df-grid" style={{ ...styles.grid, marginBottom: 10 }}>
+            {(klass.subclasses || []).map((s) => (
+              <div key={s.id} onClick={() => setSubclassDraft(s.id)} style={{ ...styles.card, ...(subclassDraft === s.id ? styles.cardActive : {}) }}>
+                <div style={styles.cardName}>{s.name}</div>
+                <div style={styles.cardBlurb}>{s.blurb}</div>
+                <ul style={styles.traitList}>{(s.features || []).map((f, i) => <li key={i}>Lvl {f.level}: {f.text}</li>)}</ul>
+              </div>
+            ))}
+          </div>
+          {!addingCustomSub ? (
+            <button style={styles.resetLink} onClick={() => setAddingCustomSub(true)}>+ Add your own subclass (from a book you own)</button>
+          ) : (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: 12 }}>
+              <FormRow label="Subclass name"><input style={styles.input} value={customSubName} onChange={(e) => setCustomSubName(e.target.value)} /></FormRow>
+              <FormRow label="Flavor line"><input style={styles.input} value={customSubBlurb} onChange={(e) => setCustomSubBlurb(e.target.value)} /></FormRow>
+              <FormRow label="Features gained (one per line)"><textarea style={styles.textarea} rows={3} value={customSubFeatures} onChange={(e) => setCustomSubFeatures(e.target.value)} /></FormRow>
+              <button style={styles.saveBtn} onClick={handleAddCustomSub}>Add & Select</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(levelFeatures.length > 0 || subclassFeaturesThisLevel.length > 0) && (
+        <div style={styles.levelUpSection}>
+          <div style={styles.panelTitle}>Also unlocked at this level</div>
+          <ul style={styles.traitList}>
+            {levelFeatures.map((f, i) => <li key={`lf-${i}`}>{f}</li>)}
+            {subclassFeaturesThisLevel.map((f, i) => <li key={`sf-${i}`}>{f.subclassName}: {f.text}</li>)}
+          </ul>
+        </div>
+      )}
+
+      <button style={{ ...styles.nextBtn, ...(canConfirm ? {} : styles.nextBtnDisabled) }} disabled={!canConfirm} onClick={handleConfirm}>
+        Confirm Level {pendingLevel}
+      </button>
+    </ModalShell>
+  );
+}
+
+/* ============================================================
+   THEME PANEL
+   ============================================================ */
+
+function ThemePanel({ theme, updateTheme, resetTheme }) {
+  const colorFields = [
+    { key: "bg", label: "Background" }, { key: "panel", label: "Panel" }, { key: "panelAlt", label: "Card Fill" },
+    { key: "border", label: "Border" }, { key: "parchment", label: "Main Text" }, { key: "parchmentDim", label: "Muted Text" },
+    { key: "gold", label: "Accent" }, { key: "burgundy", label: "Secondary Accent" },
+  ];
+  return (
+    <div>
+      <SectionLabel eyebrow="Workshop" title="Customize the Look" />
+      <div style={styles.panel}>
+        <div style={styles.panelTitle}>Colors</div>
+        <div className="df-bonus-grid" style={styles.colorGrid}>
+          {colorFields.map((f) => (
+            <label key={f.key} style={styles.colorItem}>
+              <input type="color" value={theme[f.key]} onChange={(e) => updateTheme({ [f.key]: e.target.value })} style={styles.colorSwatch} />
+              <span style={styles.colorLabel}>{f.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div style={{ ...styles.panel, marginTop: 14 }}>
+        <div style={styles.panelTitle}>Typeface</div>
+        <div style={styles.fontRow}>
+          {FONT_PRESETS.map((f) => (
+            <button key={f.id} onClick={() => updateTheme({ fontPreset: f.id })} style={{ ...styles.fontChip, ...(theme.fontPreset === f.id ? styles.fontChipActive : {}) }}>{f.label}</button>
+          ))}
+        </div>
+      </div>
+      <button style={{ ...styles.rosterBtnDanger, marginTop: 16 }} onClick={resetTheme}>Reset appearance to defaults</button>
+    </div>
+  );
+}
+
+/* ============================================================
+   SYNC PANEL
+   ============================================================ */
+
+function SyncPanel({ syncConfig, syncStatus, syncMessage, onConnect, onDisconnect, onManualSync }) {
+  const [databaseURL, setDatabaseURL] = useState(syncConfig.databaseURL || "");
+  const [code, setCode] = useState(syncConfig.code || randomCode());
+  return (
+    <div>
+      <SectionLabel eyebrow="Ledger" title="Cloud Sync" />
+      <div style={styles.panel}>
+        {syncConfig.enabled ? (
+          <div>
+            <div style={styles.syncStatusRow}><StatusDot status={syncStatus} /><span>{syncMessage || "Connected"}</span></div>
+            <div style={styles.syncMeta}>
+              <div><strong>Database:</strong> {syncConfig.databaseURL}</div>
+              <div><strong>Sync code:</strong> {syncConfig.code}</div>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+              <button style={styles.saveBtn} onClick={onManualSync}>Sync Now</button>
+              <button style={styles.rosterBtnDanger} onClick={onDisconnect}>Disconnect</button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p style={styles.syncHint}>Connect to a free cloud database so this roster and customization set stays identical across every device and person using the same sync code.</p>
+            <FormRow label="Database URL">
+              <input style={styles.input} placeholder="https://your-project-default-rtdb.firebaseio.com" value={databaseURL} onChange={(e) => setDatabaseURL(e.target.value)} />
+            </FormRow>
+            <FormRow label="Sync code (share this with whoever should see the same data)">
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={styles.input} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+                <button style={styles.newBtn} onClick={() => setCode(randomCode())} type="button">New</button>
+              </div>
+            </FormRow>
+            <button style={styles.saveBtn} disabled={!databaseURL.trim() || !code.trim()} onClick={() => onConnect({ databaseURL: databaseURL.trim(), code: code.trim() })}>Connect &amp; Sync</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function StatusDot({ status }) {
+  const color = status === "synced" ? "#5fae5f" : status === "syncing" ? "#c9a54a" : status === "error" ? "#c05555" : "#7a7264";
+  return <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: color }} />;
+}
+
+/* ============================================================
+   ABILITIES
+   ============================================================ */
+
+function AbilityBuilder({ char, scores, bumpScore, remaining, race, finalScores, onNext, onSetMethod, onReroll, onAssign }) {
+  const method = char.abilityMethod || "pointbuy";
+  const methods = [
+    { id: "pointbuy", label: "Point Buy" },
+    { id: "roll", label: "Roll (4d6 drop lowest)" },
+    { id: "array", label: "Standard Array" },
+  ];
+  const allAssigned = method !== "pointbuy" && ABILS.every((a) => char.assignments?.[a] !== null && char.assignments?.[a] !== undefined);
+  const canProceed = method === "pointbuy" ? remaining === 0 : allAssigned;
+
+  return (
+    <div>
+      <SectionLabel eyebrow="Chapter III" title="Distribute Your Abilities" />
+      <div style={styles.fontRow}>
+        {methods.map((m) => (
+          <button key={m.id} onClick={() => onSetMethod(m.id)} style={{ ...styles.fontChip, ...(method === m.id ? styles.fontChipActive : {}) }}>{m.label}</button>
+        ))}
+      </div>
+
+      {method === "pointbuy" && (
+        <div style={{ marginTop: 16 }}>
+          <div style={styles.budgetRow}>
+            <span>Point Buy Budget</span>
+            <span style={{ color: remaining === 0 ? "var(--gold)" : "var(--parchment)" }}>{remaining} / {POINT_BUY_BUDGET} remaining</span>
+          </div>
+          <div className="df-ability-grid" style={styles.abilityGrid}>
+            {ABILS.map((a) => {
+              const base = scores[a]; const bonus = race?.bonuses?.[a] || 0; const total = finalScores[a];
+              return (
+                <div key={a} style={styles.abilityCard}>
+                  <div style={styles.abilityName}>{ABIL_NAMES[a]}</div>
+                  <div style={styles.abilityControls}>
+                    <button className="df-stepbtn" style={styles.stepBtn} onClick={() => bumpScore(a, -1)} disabled={base <= 8}>−</button>
+                    <div style={styles.abilityScore}>{base}</div>
+                    <button className="df-stepbtn" style={styles.stepBtn} onClick={() => bumpScore(a, 1)} disabled={base >= 15 || POINT_BUY_COST[base + 1] - POINT_BUY_COST[base] > remaining}>+</button>
+                  </div>
+                  <div style={styles.abilityTotal}>{bonus ? `+${bonus} race → ` : ""}<strong>{total}</strong> ({fmt(mod(total))})</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {(method === "roll" || method === "array") && (
+        <div style={{ marginTop: 16 }}>
+          <div style={styles.budgetRow}>
+            <span>{method === "roll" ? "Rolled Pool" : "Standard Array"}</span>
+            {method === "roll" && <button style={styles.resetLink} onClick={onReroll}>Reroll all</button>}
+          </div>
+          <div style={styles.poolRow}>
+            {(char.rolledPool || []).map((v, i) => {
+              const used = ABILS.some((a) => char.assignments?.[a] === i);
+              return <div key={i} style={{ ...styles.poolChip, ...(used ? styles.poolChipUsed : {}) }}>{v}</div>;
+            })}
+          </div>
+          <div className="df-ability-grid" style={styles.abilityGrid}>
+            {ABILS.map((a) => {
+              const assignedIdx = char.assignments?.[a];
+              const bonus = race?.bonuses?.[a] || 0;
+              const total = finalScores[a];
+              const usedElsewhere = ABILS.filter((x) => x !== a).map((x) => char.assignments?.[x]);
+              const options = (char.rolledPool || []).map((v, i) => ({ v, i })).filter(({ i }) => !usedElsewhere.includes(i) || i === assignedIdx);
+              return (
+                <div key={a} style={styles.abilityCard}>
+                  <div style={styles.abilityName}>{ABIL_NAMES[a]}</div>
+                  <select style={{ ...styles.input, textAlign: "center", marginBottom: 8 }}
+                    value={assignedIdx === null || assignedIdx === undefined ? "" : assignedIdx}
+                    onChange={(e) => onAssign(a, e.target.value)}>
+                    <option value="">— choose —</option>
+                    {options.map(({ v, i }) => <option key={i} value={i}>{v} ({fmt(mod(v))})</option>)}
+                  </select>
+                  <div style={styles.abilityTotal}>{bonus ? `+${bonus} race → ` : ""}<strong>{total}</strong> ({fmt(mod(total))})</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <NextButton disabled={!canProceed} onClick={onNext} label="View Character Sheet →" />
+    </div>
+  );
+}
+
+/* ============================================================
+   SHEET (identity, HP, level-up, feature panels)
+   ============================================================ */
+
+function Sheet({ char, race, klass, subclass, level, finalScores, maxHP, currentHP, ac, conMod, onDamage, onHeal, onSetTemp, onResetHP, onDeathSave, onSave, onOpenLevelUp, onUndoLevel }) {
+  const [dmgInput, setDmgInput] = useState(5);
+  if (!race || !klass) {
+    return <div style={styles.emptyState}><div style={styles.emptyGlyph}>✦</div>Choose a race and class first to see your sheet take shape.</div>;
+  }
+  const hpPct = maxHP ? Math.max(0, Math.min(100, (currentHP / maxHP) * 100)) : 0;
+  const hpColor = hpPct > 50 ? "#5fae5f" : hpPct > 20 ? "#c9a54a" : "#c05555";
+  const isDown = currentHP <= 0;
+
+  return (
+    <div>
+      <SectionLabel eyebrow="Chapter IV" title="Character Sheet" />
+      <div className="df-sheet-head" style={styles.sheetHead}>
+        <div>
+          <div style={styles.sheetName}>{char.name || "Unnamed Adventurer"}</div>
+          <div style={styles.sheetSub}>
+            Level {level} {race.name} {klass.name}{subclass ? ` (${subclass.name})` : ""} · Prof. {fmt(profBonus(level))}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {level < 20 && <button style={styles.saveBtn} onClick={onOpenLevelUp}>Level Up →</button>}
+          {level > 1 && <button style={styles.resetLink} onClick={onUndoLevel}>Undo last level</button>}
+        </div>
+      </div>
+
+      {/* Health */}
+      <div style={styles.panel}>
+        <div style={styles.panelTitle}>Health</div>
+        <div style={styles.hpBarOuter}><div style={{ ...styles.hpBarInner, width: `${hpPct}%`, background: hpColor }} /></div>
+        <div style={styles.hpNumbers}>
+          <span><strong style={{ color: "var(--gold)" }}>{currentHP}</strong> / {maxHP} HP</span>
+          {char.tempHP > 0 && <span style={{ color: "var(--parchmentDim)" }}>+{char.tempHP} temp</span>}
+        </div>
+        <div style={styles.hpControls}>
+          <input type="number" style={{ ...styles.input, width: 70 }} value={dmgInput} onChange={(e) => setDmgInput(Number(e.target.value) || 0)} />
+          <button style={styles.rosterBtnDanger} onClick={() => onDamage(dmgInput)}>Damage</button>
+          <button style={styles.rosterBtn} onClick={() => onHeal(dmgInput)}>Heal</button>
+          <button style={styles.newBtn} onClick={() => { const n = prompt("Set temporary HP:", char.tempHP); if (n !== null) onSetTemp(Number(n) || 0); }}>Set Temp HP</button>
+          <button style={styles.newBtn} onClick={onResetHP}>Full Rest</button>
+        </div>
+        {isDown && (
+          <div style={styles.deathSaves}>
+            <div style={styles.panelTitle}>Death Saves</div>
+            <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+              <DeathSaveRow label="Successes" value={char.deathSaves.success} onChange={(v) => onDeathSave("success", v)} color="#5fae5f" />
+              <DeathSaveRow label="Failures" value={char.deathSaves.fail} onChange={(v) => onDeathSave("fail", v)} color="#c05555" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="df-stat-row" style={{ ...styles.statRow, marginTop: 14 }}>
+        <StatBox label="Armor Class" value={ac} />
+        <StatBox label="Speed" value={`${race.speed} ft.`} />
+        <StatBox label="Hit Die" value={`d${klass.hitDie}`} />
+        <StatBox label="Proficiency" value={fmt(profBonus(level))} />
+      </div>
+
+      <div className="df-ability-strip" style={styles.abilityStrip}>
+        {ABILS.map((a) => (
+          <div key={a} style={styles.abilityChip}>
+            <div style={styles.abilityChipLabel}>{a.toUpperCase()}</div>
+            <div style={styles.abilityChipScore}>{finalScores[a]}</div>
+            <div style={styles.abilityChipMod}>{fmt(mod(finalScores[a]))}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="df-two-col" style={styles.twoCol}>
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Racial Traits — {race.name}</div>
+          <ul style={styles.traitList}>{race.traits.map((t, i) => <li key={i}>{t}</li>)}</ul>
+        </div>
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Class Features — {klass.name}</div>
+          <ul style={styles.traitList}>{klass.features.map((f, i) => <li key={i}>{f}</li>)}</ul>
+          <div style={styles.panelMetaRow}><span style={styles.pillDim}>Armor: {klass.armor}</span></div>
+          <div style={styles.panelMetaRow}><span style={styles.pillDim}>Weapons: {klass.weapons}</span></div>
+        </div>
+      </div>
+
+      {subclass && (
+        <div style={{ ...styles.panel, marginBottom: 22 }}>
+          <div style={styles.panelTitle}>{subclass.name}</div>
+          <div style={{ fontSize: 13.5, fontStyle: "italic", color: "var(--parchmentDim)", marginBottom: 8 }}>{subclass.blurb}</div>
+          <ul style={styles.traitList}>{(subclass.features || []).map((f, i) => <li key={i}>Lvl {f.level}: {f.text}</li>)}</ul>
+        </div>
+      )}
+
+      {char.levelHistory.length > 0 && (
+        <div style={{ ...styles.panel, marginBottom: 22 }}>
+          <div style={styles.panelTitle}>Progression Log</div>
+          <ul style={styles.traitList}>
+            {char.levelHistory.map((l, i) => (
+              <li key={i}>
+                Level {l.level}: +{l.hpRoll} HP ({l.hpMethod === "avg" ? "average" : "rolled"})
+                {l.asiChoice?.type === "asi" && ` · ASI: ${ABILS.filter((a) => l.asiChoice.abilities[a]).map((a) => `${a.toUpperCase()} +${l.asiChoice.abilities[a]}`).join(", ")}`}
+                {l.asiChoice?.type === "feat" && ` · Feat: ${l.asiChoice.name}`}
+                {l.subclassId && ` · Subclass chosen`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <button style={styles.saveBtn} onClick={onSave}>Save to Roster</button>
+    </div>
+  );
+}
+
+function DeathSaveRow({ label, value, onChange, color }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: "var(--parchmentDim)", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {[1, 2, 3].map((n) => (
+          <div key={n} onClick={() => onChange(value >= n ? n - 1 : n)}
+            style={{ width: 22, height: 22, borderRadius: "50%", border: `2px solid ${color}`, background: value >= n ? color : "transparent", cursor: "pointer" }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value }) {
+  return <div style={styles.statBox}><div style={styles.statValue}>{value}</div><div style={styles.statLabel}>{label}</div></div>;
+}
+
+/* ============================================================
+   INVENTORY
+   ============================================================ */
+
+function InventoryPanel({ items, onAdd, onUpdate, onDelete }) {
+  const [name, setName] = useState("");
+  const [qty, setQty] = useState(1);
+  const [notes, setNotes] = useState("");
+  const [isWeapon, setIsWeapon] = useState(false);
+  const [weaponMode, setWeaponMode] = useState("preset"); // 'preset' | 'custom'
+  const [selectedWeaponId, setSelectedWeaponId] = useState(WEAPONS[0].id);
+  const [customDice, setCustomDice] = useState("1d6");
+  const [customType, setCustomType] = useState("slashing");
+  const [customFinesse, setCustomFinesse] = useState(false);
+  const [customRanged, setCustomRanged] = useState(false);
+  const [customVersatile, setCustomVersatile] = useState("");
+  const [abilityOverride, setAbilityOverride] = useState("");
+
+  const submit = () => {
+    if (!name.trim()) return;
+    let weaponFields = { weapon: false };
+    if (isWeapon) {
+      if (weaponMode === "preset") {
+        const w = WEAPONS.find((x) => x.id === selectedWeaponId);
+        weaponFields = {
+          weapon: true, damageDice: w.damageDice, damageType: w.damageType, finesse: w.finesse,
+          ranged: w.ranged, versatileDice: w.versatileDice, properties: w.properties,
+          abilityOverride: abilityOverride || null,
+        };
+      } else {
+        weaponFields = {
+          weapon: true, damageDice: customDice.trim() || "1d4", damageType: customType.trim() || "bludgeoning",
+          finesse: customFinesse, ranged: customRanged, versatileDice: customVersatile.trim() || null,
+          properties: [], abilityOverride: abilityOverride || null,
+        };
+      }
+    }
+    onAdd({ name: name.trim(), qty: qty || 1, notes: notes.trim(), equipped: isWeapon, ...weaponFields });
+    setName(""); setQty(1); setNotes(""); setIsWeapon(false); setAbilityOverride("");
+  };
+
+  return (
+    <div>
+      <SectionLabel eyebrow="Pack" title="Items & Equipment" />
+      <div style={{ ...styles.panel, marginBottom: 18 }}>
+        <div className="df-form-two-up" style={{ ...styles.formTwoUp, gridTemplateColumns: "2fr 1fr" }}>
+          <FormRow label="Item name"><input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Longsword, Potion of Healing, Rope (50 ft.)…" /></FormRow>
+          <FormRow label="Qty"><input style={styles.input} type="number" value={qty} onChange={(e) => setQty(Number(e.target.value) || 1)} /></FormRow>
+        </div>
+        <FormRow label="Notes"><input style={styles.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional flavor or extra notes…" /></FormRow>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer", fontSize: 13.5, color: "var(--parchmentDim)" }}>
+          <input type="checkbox" checked={isWeapon} onChange={(e) => setIsWeapon(e.target.checked)} />
+          This is a weapon — link it to an attack action
+        </label>
+
+        {isWeapon && (
+          <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button type="button" style={{ ...styles.fontChip, ...(weaponMode === "preset" ? styles.fontChipActive : {}) }} onClick={() => setWeaponMode("preset")}>From weapon list</button>
+              <button type="button" style={{ ...styles.fontChip, ...(weaponMode === "custom" ? styles.fontChipActive : {}) }} onClick={() => setWeaponMode("custom")}>Custom weapon</button>
+            </div>
+
+            {weaponMode === "preset" ? (
+              <FormRow label="Weapon">
+                <select style={styles.input} value={selectedWeaponId} onChange={(e) => setSelectedWeaponId(e.target.value)}>
+                  {WEAPON_CATEGORIES.map((cat) => (
+                    <optgroup key={cat} label={cat}>
+                      {WEAPONS.filter((w) => w.category === cat).map((w) => (
+                        <option key={w.id} value={w.id}>{w.name} — {w.damageDice} {w.damageType}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </FormRow>
+            ) : (
+              <div>
+                <div className="df-form-two-up" style={styles.formTwoUp}>
+                  <FormRow label="Damage dice"><input style={styles.input} value={customDice} onChange={(e) => setCustomDice(e.target.value)} placeholder="1d8" /></FormRow>
+                  <FormRow label="Damage type"><input style={styles.input} value={customType} onChange={(e) => setCustomType(e.target.value)} placeholder="slashing" /></FormRow>
+                </div>
+                <div className="df-form-two-up" style={styles.formTwoUp}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                    <input type="checkbox" checked={customFinesse} onChange={(e) => setCustomFinesse(e.target.checked)} /> Finesse
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                    <input type="checkbox" checked={customRanged} onChange={(e) => setCustomRanged(e.target.checked)} /> Ranged
+                  </label>
+                </div>
+                <FormRow label="Versatile die (optional)"><input style={styles.input} value={customVersatile} onChange={(e) => setCustomVersatile(e.target.value)} placeholder="1d10" /></FormRow>
+              </div>
+            )}
+
+            <FormRow label="Ability used (leave on Auto unless you want to force it)">
+              <select style={styles.input} value={abilityOverride} onChange={(e) => setAbilityOverride(e.target.value)}>
+                <option value="">Auto (based on Finesse/Ranged)</option>
+                {ABILS.map((a) => <option key={a} value={a}>{ABIL_NAMES[a]}</option>)}
+              </select>
+            </FormRow>
+          </div>
+        )}
+
+        <button style={styles.saveBtn} onClick={submit}>Add Item</button>
+      </div>
+
+      {items.length === 0 ? (
+        <div style={styles.emptyState}><div style={styles.emptyGlyph}>🎒</div>No items yet — add gear, weapons, or potions above.</div>
+      ) : (
+        <div style={styles.rosterList}>
+          {items.map((it) => (
+            <div key={it.id} className="df-roster-row" style={styles.rosterRow}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} title="Equipped weapons appear as actions">
+                <input type="checkbox" checked={it.equipped} onChange={(e) => onUpdate(it.id, { equipped: e.target.checked })} />
+              </label>
+              <div style={{ flex: 1 }}>
+                <div style={styles.rosterName}>
+                  {it.name} {it.qty > 1 ? `×${it.qty}` : ""}
+                  {it.equipped && <span style={styles.pill}>Equipped</span>}
+                  {it.weapon && <span style={styles.pillDim}>⚔ {it.damageDice} {it.damageType}{it.versatileDice ? ` / ${it.versatileDice}` : ""}</span>}
+                </div>
+                {it.notes && <div style={styles.rosterSub}>{it.notes}</div>}
+              </div>
+              <div className="df-roster-btnrow" style={styles.rosterBtnRow}>
+                <button className="df-stepbtn" style={styles.stepBtnSmall} onClick={() => onUpdate(it.id, { qty: Math.max(1, it.qty - 1) })}>−</button>
+                <button className="df-stepbtn" style={styles.stepBtnSmall} onClick={() => onUpdate(it.id, { qty: it.qty + 1 })}>+</button>
+                <button style={styles.rosterBtnDanger} onClick={() => onDelete(it.id)}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {items.some((it) => it.weapon) && (
+        <div style={{ fontSize: 12.5, color: "var(--parchmentDim)", marginTop: 10, fontStyle: "italic" }}>
+          Equipped weapons show up automatically on the Actions tab with live to-hit and damage.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   ACTIONS
+   ============================================================ */
+
+function ActionsPanel({ actions, inventory, finalScores, level, onAdd, onUpdate, onDelete, onRoll }) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState("Attack");
+  const [details, setDetails] = useState("");
+
+  const submit = () => {
+    if (!name.trim()) return;
+    onAdd({ name: name.trim(), type, details: details.trim() });
+    setName(""); setDetails("");
+  };
+
+  const rollForAction = (a) => {
+    const parsed = parseDiceNotation(a.details);
+    if (!parsed) return;
+    onRoll({
+      label: a.name, notation: `${parsed.count}d${parsed.sides}${parsed.modifier ? fmt(parsed.modifier) : ""}`,
+      count: parsed.count, sides: parsed.sides, modifier: parsed.modifier, combine: "sum",
+    });
+  };
+
+  const weaponItems = (inventory || []).filter((it) => it.weapon && it.equipped);
+
+  const rollWeaponAttack = (item, attack) => {
+    onRoll({ label: `${item.name} — Attack`, notation: `1d20${fmt(attack.toHit)}`, count: 1, sides: 20, modifier: attack.toHit, combine: "sum" });
+  };
+  const rollWeaponDamage = (item, attack, dice) => {
+    const parsed = parseSimpleDice(dice);
+    if (!parsed) return;
+    onRoll({ label: `${item.name} — Damage`, notation: `${dice}${fmt(attack.dmgMod)} ${item.damageType}`, count: parsed.count, sides: parsed.sides, modifier: attack.dmgMod, combine: "sum" });
+  };
+
+  return (
+    <div>
+      <SectionLabel eyebrow="Combat" title="Actions" />
+
+      {weaponItems.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 11.5, letterSpacing: 1, textTransform: "uppercase", color: "var(--parchmentDim)", marginBottom: 8, fontFamily: "var(--font-display)" }}>
+            From Equipped Weapons <span style={{ fontStyle: "italic", textTransform: "none", letterSpacing: 0 }}>(assumes proficiency)</span>
+          </div>
+          <div style={styles.rosterList}>
+            {weaponItems.map((item) => {
+              const attack = computeWeaponAttack(item, finalScores, level);
+              return (
+                <div key={item.id} className="df-roster-row" style={styles.rosterRow}>
+                  <div style={{ flex: 1 }}>
+                    <div style={styles.rosterName}>{item.name} <span style={styles.pillDim}>Attack</span></div>
+                    <div style={styles.rosterSub}>
+                      {fmt(attack.toHit)} to hit · {item.damageDice}{fmt(attack.dmgMod)} {item.damageType}
+                      {item.versatileDice && ` (two-handed: ${item.versatileDice}${fmt(attack.dmgMod)})`}
+                      {" · "}{attack.ability.toUpperCase()}-based
+                    </div>
+                  </div>
+                  <div className="df-roster-btnrow" style={styles.rosterBtnRow}>
+                    <button style={styles.rosterBtn} onClick={() => rollWeaponAttack(item, attack)}>🎯 Attack</button>
+                    <button style={styles.rosterBtn} onClick={() => rollWeaponDamage(item, attack, item.damageDice)}>🎲 Damage</button>
+                    {item.versatileDice && <button style={styles.rosterBtn} onClick={() => rollWeaponDamage(item, attack, item.versatileDice)}>🎲 2H Damage</button>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ ...styles.panel, marginBottom: 18 }}>
+        <div className="df-form-two-up" style={{ ...styles.formTwoUp, gridTemplateColumns: "2fr 1fr" }}>
+          <FormRow label="Action name"><input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Fire Bolt, Second Wind, Rage…" /></FormRow>
+          <FormRow label="Type">
+            <select style={styles.input} value={type} onChange={(e) => setType(e.target.value)}>
+              {["Attack", "Spell", "Bonus Action", "Reaction", "Other"].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </FormRow>
+        </div>
+        <FormRow label="Details"><input style={styles.input} value={details} onChange={(e) => setDetails(e.target.value)} placeholder="+5 to hit, 1d8+3 slashing, range 5 ft." /></FormRow>
+        <button style={styles.saveBtn} onClick={submit}>Add Action</button>
+      </div>
+
+      {actions.length === 0 && weaponItems.length === 0 ? (
+        <div style={styles.emptyState}><div style={styles.emptyGlyph}>⚔</div>No actions yet — equip a weapon in Items, or add a spell or ability above.</div>
+      ) : actions.length > 0 ? (
+        <div style={styles.rosterList}>
+          {actions.map((a) => {
+            const rollable = !!parseDiceNotation(a.details);
+            return (
+              <div key={a.id} className="df-roster-row" style={styles.rosterRow}>
+                <div style={{ flex: 1 }}>
+                  <div style={styles.rosterName}>{a.name} <span style={styles.pillDim}>{a.type}</span></div>
+                  {a.details && <div style={styles.rosterSub}>{a.details}</div>}
+                </div>
+                <div className="df-roster-btnrow" style={styles.rosterBtnRow}>
+                  {rollable && <button style={styles.rosterBtn} onClick={() => rollForAction(a)}>🎲 Roll</button>}
+                  <button style={styles.rosterBtnDanger} onClick={() => onDelete(a.id)}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ============================================================
+   DICE
+   ============================================================ */
+
+function DicePanel({ history, onRoll, onClear }) {
+  const [sides, setSides] = useState(20);
+  const [count, setCount] = useState(1);
+  const [modifier, setModifier] = useState(0);
+
+  const quickRoll = (s) => {
+    onRoll({ label: `d${s}`, notation: `1d${s}`, count: 1, sides: s, modifier: 0, combine: "sum" });
+  };
+  const customRoll = () => {
+    onRoll({ label: "Custom Roll", notation: `${count}d${sides}${modifier ? fmt(modifier) : ""}`, count: Math.max(1, count), sides, modifier, combine: "sum" });
+  };
+  const advantageRoll = (mode) => {
+    onRoll({ label: mode === "adv" ? "d20 (Advantage)" : "d20 (Disadvantage)", notation: "2d20", count: 2, sides: 20, modifier: 0, combine: mode === "adv" ? "max" : "min" });
+  };
+
+  return (
+    <div>
+      <SectionLabel eyebrow="Tray" title="Dice Roller" />
+      <div style={{ ...styles.panel, marginBottom: 18 }}>
+        <div style={styles.panelTitle}>Quick Roll</div>
+        <div className="df-dice-grid" style={styles.diceGrid}>
+          {DICE_TYPES.map((s) => (
+            <button key={s} style={styles.diceBtn} onClick={() => quickRoll(s)}>d{s}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button style={styles.newBtn} onClick={() => advantageRoll("adv")}>d20 Advantage</button>
+          <button style={styles.newBtn} onClick={() => advantageRoll("dis")}>d20 Disadvantage</button>
+        </div>
+      </div>
+
+      <div style={{ ...styles.panel, marginBottom: 18 }}>
+        <div style={styles.panelTitle}>Custom Roll</div>
+        <div className="df-form-two-up" style={styles.customRollRow}>
+          <FormRow label="Count">
+            <input style={styles.input} type="number" min={1} value={count} onChange={(e) => setCount(Number(e.target.value) || 1)} />
+          </FormRow>
+          <FormRow label="Die">
+            <select style={styles.input} value={sides} onChange={(e) => setSides(Number(e.target.value))}>
+              {DICE_TYPES.map((s) => <option key={s} value={s}>d{s}</option>)}
+            </select>
+          </FormRow>
+          <FormRow label="Modifier">
+            <input style={styles.input} type="number" value={modifier} onChange={(e) => setModifier(Number(e.target.value) || 0)} />
+          </FormRow>
+        </div>
+        <button style={styles.saveBtn} onClick={customRoll}>Roll {count}d{sides}{modifier ? fmt(modifier) : ""}</button>
+      </div>
+
+      <div style={styles.panel}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={styles.panelTitle}>Roll History</div>
+          {history.length > 0 && <button style={styles.resetLink} onClick={onClear}>Clear</button>}
+        </div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--parchmentDim)", fontStyle: "italic" }}>No rolls yet — try a die above.</div>
+        ) : (
+          <div style={styles.rosterList}>
+            {history.map((h) => (
+              <div key={h.id} style={styles.diceHistoryRow}>
+                <div>
+                  <div style={styles.rosterName}>{h.label} <span style={styles.pillDim}>{h.notation}</span></div>
+                  <div style={styles.rosterSub}>[{h.rolls.join(", ")}]{h.modifier ? ` ${fmt(h.modifier)}` : ""}</div>
+                </div>
+                <div style={styles.diceTotal}>{h.total}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ROSTER
+   ============================================================ */
+
+function Roster({ roster, loaded, races, classes, onLoad, onDelete }) {
+  if (!loaded) return <div style={styles.emptyState}>Opening the roster…</div>;
+  if (roster.length === 0) return <div style={styles.emptyState}><div style={styles.emptyGlyph}>⚜</div>No characters saved yet. Build one and hit "Save to Roster" from the Sheet tab.</div>;
+  return (
+    <div>
+      <SectionLabel eyebrow="Archive" title="Your Roster" />
+      <div style={styles.rosterList}>
+        {roster.map((entry) => {
+          const race = races.find((r) => r.id === entry.raceId);
+          const klass = classes.find((c) => c.id === entry.classId);
+          const lvl = 1 + (entry.levelHistory?.length || 0);
+          return (
+            <div key={entry.id} className="df-roster-row" style={styles.rosterRow}>
+              <div style={styles.rosterGlyph}>{klass?.glyph || "?"}</div>
+              <div style={{ flex: 1 }}>
+                <div style={styles.rosterName}>{entry.name}</div>
+                <div style={styles.rosterSub}>Level {lvl} {race?.name || "?"} {klass?.name || "?"}</div>
+              </div>
+              <div className="df-roster-btnrow" style={styles.rosterBtnRow}>
+                <button style={styles.rosterBtn} onClick={() => onLoad(entry)}>Open</button>
+                <button style={styles.rosterBtnDanger} onClick={() => onDelete(entry.id)}>Delete</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   DICE ROLL ANIMATION OVERLAY
+   ============================================================ */
+
+function RollOverlay({ anim }) {
+  const displayDice = anim.values.slice(0, 8);
+  const extra = anim.values.length - displayDice.length;
+  const rolling = anim.phase === "rolling";
+  const liveTotal = rolling
+    ? (anim.combine === "max" ? Math.max(...anim.values)
+      : anim.combine === "min" ? Math.min(...anim.values)
+      : anim.values.reduce((s, n) => s + n, 0) + anim.modifier)
+    : anim.total;
+
+  return (
+    <div className="df-roll-overlay" style={styles.rollOverlay}>
+      <div style={styles.rollOverlayLabel}>{anim.label} <span style={styles.pillDim}>{anim.notation}</span></div>
+      <div style={styles.rollOverlayDice}>
+        {displayDice.map((v, i) => (
+          <div key={i} className={`df-die ${rolling ? "df-die-rolling" : "df-die-settled"}`} style={styles.rollDie}>{v}</div>
+        ))}
+        {extra > 0 && <div className="df-die" style={styles.rollDie}>+{extra}</div>}
+      </div>
+      <div style={{ ...styles.rollOverlayTotal, opacity: rolling ? 0.6 : 1 }}>{liveTotal}</div>
+    </div>
+  );
+}
+
+function SectionLabel({ eyebrow, title }) {
+  return <div style={styles.sectionLabel}><div style={styles.eyebrow}>{eyebrow}</div><div style={styles.sectionTitle}>{title}</div></div>;
+}
+function NextButton({ disabled, onClick, label }) {
+  return <button style={{ ...styles.nextBtn, ...(disabled ? styles.nextBtnDisabled : {}) }} disabled={disabled} onClick={onClick}>{label}</button>;
+}
+
+/* ============================================================
+   GLOBAL CSS
+   ============================================================ */
+
+const GLOBAL_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=Playfair+Display:wght@500;700&family=Lora:ital,wght@0,400;0,600;1,400&family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&display=swap');
+  * { box-sizing: border-box; }
+  input[type="range"] { accent-color: var(--gold, #c9a54a); }
+  input[type="color"] { border: none; background: none; padding: 0; width: 34px; height: 34px; cursor: pointer; border-radius: 6px; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border, #3a3428); border-radius: 4px; }
+
+  @media (max-width: 1024px) {
+    .df-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .df-ability-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  }
+
+  @media (max-width: 640px) {
+    .df-app { padding: 8px 6px 40px !important; }
+    .df-header { flex-direction: column !important; align-items: stretch !important; padding: 14px 14px !important; }
+    .df-header > div:last-child { justify-content: flex-end; }
+    .df-grid { grid-template-columns: 1fr !important; }
+    .df-ability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .df-ability-strip { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+    .df-two-col { grid-template-columns: 1fr !important; }
+    .df-form-two-up { grid-template-columns: 1fr !important; }
+    .df-bonus-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .df-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .df-sheet-head { flex-direction: column !important; align-items: flex-start !important; }
+    .df-modal-overlay { padding: 0 !important; align-items: flex-end !important; }
+    .df-modal-card { max-width: 100% !important; width: 100% !important; border-radius: 12px 12px 0 0 !important; max-height: 92vh !important; }
+    .df-modal-body { padding: 14px !important; }
+
+    /* Roster / weapon / action rows: keep checkbox+name on one line, buttons wrap to their own line */
+    .df-roster-row { flex-wrap: wrap !important; row-gap: 8px !important; }
+    .df-roster-btnrow { flex-basis: 100% !important; justify-content: flex-start !important; margin-top: 0; }
+    .df-roster-btnrow button { flex: 1 1 auto; }
+
+    /* Tab bar: 10 tabs need to be compact but still comfortably tappable */
+    .df-tabbar button { min-height: 46px; min-width: 64px; padding: 10px 6px; font-size: 9.5px !important; letter-spacing: 0.5px !important; }
+
+    .df-stepbtn { width: 36px !important; height: 36px !important; }
+    input, select, textarea, button { font-size: 16px; } /* prevents iOS auto-zoom on focus */
+    .df-roll-overlay { left: 12px !important; right: 12px !important; bottom: 12px !important; width: auto !important; max-width: none !important; }
+    .df-roll-overlay .df-die { width: 34px !important; height: 34px !important; font-size: 14px !important; }
+    .df-dice-grid button { padding: 12px 4px !important; font-size: 13px !important; }
+  }
+
+  @media (max-width: 380px) {
+    .df-tabbar button { min-width: 56px; font-size: 9px !important; }
+    .df-ability-grid { grid-template-columns: 1fr !important; }
+    .df-stat-row { grid-template-columns: 1fr !important; }
+  }
+
+  @keyframes df-tumble {
+    0%   { transform: rotate(0deg) scale(1); }
+    30%  { transform: rotate(110deg) scale(1.12); }
+    60%  { transform: rotate(230deg) scale(0.92); }
+    100% { transform: rotate(360deg) scale(1); }
+  }
+  @keyframes df-settle {
+    0%   { transform: scale(1.35) rotate(8deg); }
+    55%  { transform: scale(0.9) rotate(-4deg); }
+    100% { transform: scale(1) rotate(0deg); }
+  }
+  .df-die-rolling { animation: df-tumble 0.35s linear infinite; }
+  .df-die-settled { animation: df-settle 0.4s ease-out; border-color: var(--gold) !important; }
+`;
+
+/* ============================================================
+   STYLE TOKENS
+   ============================================================ */
+
+const styles = {
+  app: { minHeight: "100%", background: "radial-gradient(circle at 50% 0%, var(--panelAlt) 0%, var(--bg) 55%)", color: "var(--parchment)", fontFamily: "var(--font-body)", padding: "24px 16px 60px", position: "relative" },
+  frame: { maxWidth: 880, margin: "0 auto", border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel)", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", overflow: "hidden" },
+  header: { display: "flex", alignItems: "center", gap: 14, padding: "18px 22px", borderBottom: "1px solid var(--border)", background: "linear-gradient(180deg, var(--panelAlt), var(--panel))", flexWrap: "wrap" },
+  headerBtnRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+  crest: { fontSize: 28, color: "var(--gold)" },
+  title: { fontFamily: "var(--font-display)", fontWeight: 700, letterSpacing: 2, fontSize: 13, color: "var(--gold)", textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 },
+  levelBadge: { fontSize: 10, padding: "2px 6px", border: "1px solid var(--gold)", borderRadius: 10 },
+  nameInput: { background: "transparent", border: "none", borderBottom: "1px solid var(--border)", color: "var(--parchment)", fontFamily: "var(--font-body)", fontSize: 20, fontStyle: "italic", padding: "2px 0", width: "100%", outline: "none" },
+  editToggle: { border: "1px solid var(--border)", background: "transparent", color: "var(--parchmentDim)", fontFamily: "var(--font-body)", fontSize: 14, padding: "8px 14px", borderRadius: 6, cursor: "pointer" },
+  editToggleActive: { borderColor: "var(--gold)", color: "var(--gold)", background: "rgba(201,165,74,0.1)" },
+  newBtn: { border: "1px solid var(--border)", background: "transparent", color: "var(--parchmentDim)", fontFamily: "var(--font-body)", fontSize: 14, padding: "8px 14px", borderRadius: 6, cursor: "pointer" },
+  tabBar: { display: "flex", borderBottom: "1px solid var(--border)", overflowX: "auto" },
+  tabBtn: { flex: "1 1 auto", minWidth: 74, padding: "12px 8px", background: "transparent", border: "none", borderBottom: "2px solid transparent", color: "var(--parchmentDim)", fontFamily: "var(--font-display)", fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", cursor: "pointer" },
+  tabBtnActive: { color: "var(--gold)", borderBottom: "2px solid var(--gold)" },
+  body: { padding: "24px 22px 30px" },
+  editBanner: { marginBottom: 16, padding: "10px 14px", borderRadius: 6, background: "rgba(201,165,74,0.1)", border: "1px solid rgba(201,165,74,0.35)", color: "var(--gold)", fontSize: 13.5, fontStyle: "italic" },
+  resetLink: { display: "block", marginBottom: 14, background: "transparent", border: "none", color: "var(--parchmentDim)", textDecoration: "underline", fontSize: 12.5, cursor: "pointer", padding: 0 },
+  sectionLabel: { marginBottom: 18 },
+  eyebrow: { fontFamily: "var(--font-display)", fontSize: 11, letterSpacing: 3, color: "var(--burgundy)", textTransform: "uppercase", marginBottom: 4 },
+  sectionTitle: { fontFamily: "var(--font-display)", fontSize: 24, color: "var(--parchment)" },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 12, marginBottom: 22 },
+  card: { border: "1px solid var(--border)", background: "var(--panelAlt)", borderRadius: 8, padding: 16, cursor: "pointer", position: "relative", transition: "border-color 0.15s, transform 0.15s" },
+  cardActive: { borderColor: "var(--gold)", boxShadow: "0 0 0 1px var(--gold) inset" },
+  cardEditable: { borderStyle: "dashed" },
+  cardAdd: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", borderStyle: "dashed", borderColor: "var(--gold)", color: "var(--gold)", textAlign: "center", minHeight: 110 },
+  editPencil: { position: "absolute", top: 10, right: 12, color: "var(--gold)", fontSize: 13, opacity: 0.8 },
+  cardGlyph: { fontSize: 22, color: "var(--gold)", marginBottom: 6 },
+  cardName: { fontFamily: "var(--font-display)", fontSize: 16, marginBottom: 6 },
+  cardBlurb: { fontSize: 14, color: "var(--parchmentDim)", fontStyle: "italic", marginBottom: 10, lineHeight: 1.4 },
+  cardMeta: { display: "flex", flexWrap: "wrap", gap: 6 },
+  pill: { fontSize: 11, padding: "2px 8px", borderRadius: 20, background: "rgba(201,165,74,0.12)", color: "var(--gold)", border: "1px solid rgba(201,165,74,0.35)" },
+  pillDim: { fontSize: 11, padding: "2px 8px", borderRadius: 20, background: "rgba(255,255,255,0.04)", color: "var(--parchmentDim)", border: "1px solid var(--border)" },
+  traitList: { marginTop: 12, paddingLeft: 18, fontSize: 13.5, color: "var(--parchment)", lineHeight: 1.6 },
+  nextBtn: { fontFamily: "var(--font-display)", fontSize: 13, letterSpacing: 1, textTransform: "uppercase", padding: "12px 20px", background: "var(--gold)", color: "#1c1a15", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700 },
+  nextBtnDisabled: { opacity: 0.35, cursor: "not-allowed" },
+  budgetRow: { display: "flex", justifyContent: "space-between", fontFamily: "var(--font-display)", fontSize: 12, letterSpacing: 1, color: "var(--parchmentDim)", marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" },
+  abilityGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12, marginBottom: 22 },
+  abilityCard: { border: "1px solid var(--border)", background: "var(--panelAlt)", borderRadius: 8, padding: 14, textAlign: "center" },
+  abilityName: { fontFamily: "var(--font-display)", fontSize: 12, color: "var(--parchmentDim)", marginBottom: 8 },
+  abilityControls: { display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 8 },
+  stepBtn: { width: 28, height: 28, borderRadius: "50%", border: "1px solid var(--border)", background: "transparent", color: "var(--gold)", fontSize: 16, cursor: "pointer", lineHeight: 1 },
+  stepBtnSmall: { width: 24, height: 24, borderRadius: "50%", border: "1px solid var(--border)", background: "transparent", color: "var(--gold)", fontSize: 14, cursor: "pointer", lineHeight: 1 },
+  abilityScore: { fontFamily: "var(--font-display)", fontSize: 26, minWidth: 34 },
+  abilityTotal: { fontSize: 13, color: "var(--parchmentDim)" },
+  sheetHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 14, marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid var(--border)" },
+  sheetName: { fontFamily: "var(--font-display)", fontSize: 26, color: "var(--gold)" },
+  sheetSub: { fontSize: 15, color: "var(--parchmentDim)", fontStyle: "italic", marginTop: 4 },
+  statRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 20 },
+  statBox: { border: "1px solid var(--border)", background: "var(--panelAlt)", borderRadius: 8, padding: "14px 10px", textAlign: "center" },
+  statValue: { fontFamily: "var(--font-display)", fontSize: 22, color: "var(--gold)" },
+  statLabel: { fontSize: 11.5, color: "var(--parchmentDim)", marginTop: 4, textTransform: "uppercase", letterSpacing: 1 },
+  abilityStrip: { display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8, marginBottom: 22 },
+  abilityChip: { border: "1px solid var(--border)", borderRadius: 8, padding: "10px 4px", textAlign: "center", background: "var(--panelAlt)" },
+  abilityChipLabel: { fontSize: 10.5, color: "var(--parchmentDim)", letterSpacing: 1 },
+  abilityChipScore: { fontFamily: "var(--font-display)", fontSize: 18, margin: "4px 0" },
+  abilityChipMod: { fontSize: 12, color: "var(--gold)" },
+  twoCol: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 22 },
+  panel: { border: "1px solid var(--border)", background: "var(--panelAlt)", borderRadius: 8, padding: 16 },
+  panelTitle: { fontFamily: "var(--font-display)", fontSize: 14, color: "var(--gold)", marginBottom: 10 },
+  panelMetaRow: { marginTop: 8 },
+  saveBtn: { fontFamily: "var(--font-display)", fontSize: 13, letterSpacing: 1, textTransform: "uppercase", padding: "12px 22px", background: "transparent", color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 6, cursor: "pointer", fontWeight: 700 },
+  emptyState: { textAlign: "center", color: "var(--parchmentDim)", fontStyle: "italic", padding: "40px 10px" },
+  emptyGlyph: { fontSize: 30, color: "var(--gold)", marginBottom: 10 },
+  rosterList: { display: "flex", flexDirection: "column", gap: 10 },
+  rosterRow: { display: "flex", alignItems: "center", gap: 12, border: "1px solid var(--border)", background: "var(--panelAlt)", borderRadius: 8, padding: "10px 14px" },
+  rosterBtnRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  rosterGlyph: { fontSize: 18, color: "var(--gold)", width: 26, textAlign: "center" },
+  rosterName: { fontFamily: "var(--font-display)", fontSize: 15, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  rosterSub: { fontSize: 12.5, color: "var(--parchmentDim)" },
+  rosterBtn: { fontSize: 12, padding: "6px 12px", border: "1px solid var(--gold)", background: "transparent", color: "var(--gold)", borderRadius: 6, cursor: "pointer" },
+  rosterBtnDanger: { fontSize: 12, padding: "6px 12px", border: "1px solid var(--burgundy)", background: "transparent", color: "#c98a8a", borderRadius: 6, cursor: "pointer" },
+  toast: { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "var(--panel)", border: "1px solid var(--gold)", color: "var(--gold)", padding: "10px 20px", borderRadius: 8, fontFamily: "var(--font-body)", fontSize: 14, boxShadow: "0 10px 30px rgba(0,0,0,0.5)", zIndex: 20, maxWidth: "90vw" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 30 },
+  modalCard: { width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 20px 60px rgba(0,0,0,0.6)" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 18px", borderBottom: "1px solid var(--border)" },
+  modalTitle: { fontFamily: "var(--font-display)", fontSize: 16, color: "var(--gold)" },
+  modalClose: { background: "transparent", border: "none", color: "var(--parchmentDim)", fontSize: 16, cursor: "pointer" },
+  modalBody: { padding: "16px 18px" },
+  modalDelete: { display: "block", width: "calc(100% - 36px)", margin: "0 18px 18px", padding: "10px", background: "transparent", border: "1px solid var(--burgundy)", color: "#c98a8a", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  formRow: { marginBottom: 14 },
+  formLabel: { display: "block", fontSize: 11.5, letterSpacing: 1, textTransform: "uppercase", color: "var(--parchmentDim)", marginBottom: 6, fontFamily: "var(--font-display)" },
+  formTwoUp: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  input: { width: "100%", background: "var(--panelAlt)", border: "1px solid var(--border)", borderRadius: 6, padding: "9px 10px", color: "var(--parchment)", fontFamily: "var(--font-body)", fontSize: 14, outline: "none" },
+  textarea: { width: "100%", background: "var(--panelAlt)", border: "1px solid var(--border)", borderRadius: 6, padding: "9px 10px", color: "var(--parchment)", fontFamily: "var(--font-body)", fontSize: 14, outline: "none", resize: "vertical" },
+  bonusGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 },
+  bonusItem: { display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", background: "var(--panelAlt)" },
+  bonusLabel: { fontSize: 11, color: "var(--parchmentDim)" },
+  bonusInput: { width: 44, background: "transparent", border: "none", color: "var(--gold)", fontSize: 14, textAlign: "right", outline: "none" },
+  saveChips: { display: "flex", flexWrap: "wrap", gap: 6 },
+  saveChip: { fontSize: 12, padding: "6px 10px", borderRadius: 20, border: "1px solid var(--border)", background: "transparent", color: "var(--parchmentDim)", cursor: "pointer" },
+  saveChipActive: { borderColor: "var(--gold)", color: "var(--gold)", background: "rgba(201,165,74,0.1)" },
+  colorGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 },
+  colorItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 6, cursor: "pointer" },
+  colorSwatch: { border: "1px solid var(--border)" },
+  colorLabel: { fontSize: 11, color: "var(--parchmentDim)", textAlign: "center" },
+  fontRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  fontChip: { fontSize: 13, padding: "8px 14px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--parchmentDim)", cursor: "pointer" },
+  fontChipActive: { borderColor: "var(--gold)", color: "var(--gold)", background: "rgba(201,165,74,0.1)" },
+  syncStatusRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 },
+  syncMeta: { marginTop: 10, fontSize: 12.5, color: "var(--parchmentDim)", lineHeight: 1.8, wordBreak: "break-all" },
+  syncHint: { fontSize: 13.5, color: "var(--parchmentDim)", lineHeight: 1.6, marginBottom: 16 },
+  levelUpSection: { border: "1px solid var(--border)", borderRadius: 8, padding: 14, marginBottom: 14, background: "var(--panelAlt)" },
+  hpBarOuter: { width: "100%", height: 16, borderRadius: 8, background: "rgba(255,255,255,0.06)", overflow: "hidden", border: "1px solid var(--border)" },
+  hpBarInner: { height: "100%", transition: "width 0.2s" },
+  hpNumbers: { display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 8, marginBottom: 12 },
+  hpControls: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
+  deathSaves: { marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" },
+
+  poolRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 },
+  poolChip: { minWidth: 40, textAlign: "center", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--gold)", color: "var(--gold)", fontFamily: "var(--font-display)", fontSize: 16 },
+  poolChipUsed: { opacity: 0.35, borderColor: "var(--border)", color: "var(--parchmentDim)" },
+
+  diceGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))", gap: 8 },
+  diceBtn: { padding: "14px 6px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--gold)", fontFamily: "var(--font-display)", fontSize: 15, cursor: "pointer" },
+  customRollRow: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 6 },
+  diceHistoryRow: { display: "flex", justifyContent: "space-between", alignItems: "center", border: "1px solid var(--border)", background: "var(--panel)", borderRadius: 8, padding: "8px 12px" },
+  diceTotal: { fontFamily: "var(--font-display)", fontSize: 20, color: "var(--gold)" },
+
+  rollOverlay: {
+    position: "fixed", bottom: 20, right: 20, zIndex: 40, background: "var(--panel)",
+    border: "1px solid var(--border)", borderRadius: 12, padding: "14px 18px",
+    boxShadow: "0 20px 50px rgba(0,0,0,0.55)", maxWidth: 320,
+  },
+  rollOverlayLabel: { fontFamily: "var(--font-display)", fontSize: 13, color: "var(--parchment)", marginBottom: 10, display: "flex", alignItems: "center", gap: 8 },
+  rollOverlayDice: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 },
+  rollDie: {
+    width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center",
+    border: "2px solid var(--border)", borderRadius: 8, background: "var(--panelAlt)",
+    color: "var(--gold)", fontFamily: "var(--font-display)", fontSize: 17,
+  },
+  rollOverlayTotal: { fontFamily: "var(--font-display)", fontSize: 30, color: "var(--gold)", textAlign: "center", transition: "opacity 0.2s" },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<DndForge />);
+</script>
+</body>
+</html>
